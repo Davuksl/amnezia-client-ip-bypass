@@ -33,6 +33,10 @@ class WireguardUtils : public QObject {
   virtual ~WireguardUtils() = default;
 
   virtual bool interfaceExists() = 0;
+  virtual bool isInterfaceReady(const InterfaceConfig &) const
+  {
+      return true;
+  }
   virtual QString interfaceName() { return WG_INTERFACE; }
   virtual bool addInterface(const InterfaceConfig& config) = 0;
   virtual bool deleteInterface() = 0;

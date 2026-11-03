@@ -41,8 +41,11 @@ WindowsDaemon::WindowsDaemon() : Daemon(nullptr) {
 
   connect(m_wgutils.get(), &WireguardUtilsWindows::backendFailure, this,
           &WindowsDaemon::monitorBackendFailure);
-  connect(this, &WindowsDaemon::activationFailure,
-          [this]() { m_firewallManager->disableKillSwitch(); });
+  connect(this, &WindowsDaemon::activationFailure, [this]() {
+      if (!m_routeOnly) {
+          m_firewallManager->disableKillSwitch();
+      }
+  });
 }
 
 WindowsDaemon::~WindowsDaemon() {
@@ -51,14 +54,15 @@ WindowsDaemon::~WindowsDaemon() {
 }
 
 void WindowsDaemon::prepareActivation(const InterfaceConfig& config, int inetAdapterIndex) {
-  // Before creating the interface we need to check which adapter
-  // routes to the server endpoint
-  if (inetAdapterIndex == 0) {
-      auto serveraddr = QHostAddress(config.m_serverIpv4AddrIn);
-      m_inetAdapterIndex = NetworkUtilities::AdapterIndexTo(serveraddr);
-  } else {
-      m_inetAdapterIndex = inetAdapterIndex;
-  }
+    m_routeOnly = config.m_hopType == InterfaceConfig::MultiHopEntry;
+    // Before creating the interface we need to check which adapter
+    // routes to the server endpoint
+    if (inetAdapterIndex == 0) {
+        auto serveraddr = QHostAddress(config.m_serverIpv4AddrIn);
+        m_inetAdapterIndex = NetworkUtilities::AdapterIndexTo(serveraddr);
+    } else {
+        m_inetAdapterIndex = inetAdapterIndex;
+    }
 }
 
 void WindowsDaemon::activateSplitTunnel(const InterfaceConfig& config, int vpnAdapterIndex) {
@@ -91,6 +95,9 @@ void WindowsDaemon::activateSplitTunnel(const InterfaceConfig& config, int vpnAd
 }
 
 bool WindowsDaemon::run(Op op, const InterfaceConfig& config) {
+    if (config.m_hopType == InterfaceConfig::MultiHopEntry) {
+        return true;
+    }
   if (!m_splitTunnelManager) {
     if (config.m_vpnDisabledApps.length() > 0) {
       // The Client has sent us a list of disabled apps, but we failed

@@ -4,6 +4,7 @@
 #include "localsocketcontroller.h"
 
 #include <stdint.h>
+#include <utility>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -17,6 +18,7 @@
 #include <QJsonValue>
 #include <QLocalSocket>
 #include <QObject>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTimer>
@@ -40,22 +42,23 @@ namespace {
 Logger logger("LocalSocketController");
 }
 
-LocalSocketController::LocalSocketController() {
-  MZ_COUNT_CTOR(LocalSocketController);
+LocalSocketController::LocalSocketController(const QString &socketPath) : m_socketPath(socketPath)
+{
+    MZ_COUNT_CTOR(LocalSocketController);
 
-  m_socket = new QLocalSocket(this);
-  connect(m_socket, &QLocalSocket::connected, this,
-          &LocalSocketController::daemonConnected);
-  connect(m_socket, &QLocalSocket::disconnected, this,
-          [&] { errorOccurred(QLocalSocket::PeerClosedError); });
-  connect(m_socket, &QLocalSocket::errorOccurred, this,
-          &LocalSocketController::errorOccurred);
-  connect(m_socket, &QLocalSocket::readyRead, this,
-          &LocalSocketController::readData);
+    m_socket = new QLocalSocket(this);
+    connect(m_socket, &QLocalSocket::connected, this, &LocalSocketController::daemonConnected);
+    connect(m_socket, &QLocalSocket::disconnected, this, [&] { errorOccurred(QLocalSocket::PeerClosedError); });
+    connect(m_socket, &QLocalSocket::errorOccurred, this, &LocalSocketController::errorOccurred);
+    connect(m_socket, &QLocalSocket::readyRead, this, &LocalSocketController::readData);
 
-  m_initializingTimer.setSingleShot(true);
-  connect(&m_initializingTimer, &QTimer::timeout, this,
-          &LocalSocketController::initializeInternal);
+    m_initializingTimer.setSingleShot(true);
+    connect(&m_initializingTimer, &QTimer::timeout, this, &LocalSocketController::initializeInternal);
+    m_statusTimer.setInterval(2000);
+    connect(&m_statusTimer, &QTimer::timeout, this, &LocalSocketController::checkStatus);
+    m_deactivationRetryTimer.setSingleShot(true);
+    m_deactivationRetryTimer.setInterval(5000);
+    connect(&m_deactivationRetryTimer, &QTimer::timeout, this, &LocalSocketController::requestDeactivation);
 }
 
 LocalSocketController::~LocalSocketController() {
@@ -64,7 +67,20 @@ LocalSocketController::~LocalSocketController() {
 
 void LocalSocketController::errorOccurred(
     QLocalSocket::LocalSocketError error) {
+    if (m_daemonState == eDisconnected) {
+        return;
+    }
   logger.error() << "Error occurred:" << error;
+  m_buffer.clear();
+  m_statusTimer.stop();
+  m_deactivationRetryTimer.stop();
+
+  if (m_activationSent) {
+      m_deactivating = true;
+      m_daemonState = eInitializing;
+      m_initializingTimer.start(m_initializingRetry++ < MAX_CONNECTION_RETRY ? CONNECTION_RETRY_TIMER_MSEC : 5000);
+      return;
+  }
 
   if (m_daemonState == eInitializing) {
     if (m_initializingRetry++ < MAX_CONNECTION_RETRY) {
@@ -72,7 +88,11 @@ void LocalSocketController::errorOccurred(
       return;
     }
 
+    const quint64 generation = m_activationGeneration;
     emit initialized(false, false, QDateTime());
+    if (generation != m_activationGeneration) {
+        return;
+    }
   }
 
   qCritical() << "ControllerError";
@@ -82,9 +102,16 @@ void LocalSocketController::errorOccurred(
 void LocalSocketController::disconnectInternal() {
   // We're still eReady as the Deamon is alive
   // and can make a new connection.
-  m_daemonState = eReady;
+  m_daemonState = m_socket->state() == QLocalSocket::ConnectedState ? eReady : eDisconnected;
   m_initializingRetry = 0;
   m_initializingTimer.stop();
+  m_statusTimer.stop();
+  m_deactivationRetryTimer.stop();
+  m_activationSent = false;
+  m_deactivating = false;
+  m_peerPublicKey.clear();
+  m_pendingActivation = { };
+  m_buffer.clear();
   emit disconnected();
 }
 
@@ -101,7 +128,12 @@ void LocalSocketController::initialize(const Device* device, const Keys* keys) {
 }
 
 void LocalSocketController::initializeInternal() {
+    {
+        const QSignalBlocker blocker(m_socket);
+        m_socket->abort();
+    }
   m_daemonState = eInitializing;
+  m_buffer.clear();
 
 #ifdef MZ_WINDOWS
   QString path = "\\\\.\\pipe\\amneziavpn";
@@ -112,30 +144,49 @@ void LocalSocketController::initializeInternal() {
   }
 #endif
 
+  if (!m_socketPath.isEmpty()) {
+      path = m_socketPath;
+  }
+
   logger.debug() << "Connecting to:" << path;
   m_socket->connectToServer(path);
 }
 
 void LocalSocketController::daemonConnected() {
   logger.debug() << "Daemon connected";
-  Q_ASSERT(m_daemonState == eInitializing);
+  if (m_daemonState != eInitializing) {
+      return;
+  }
   checkStatus();
 }
 
 void LocalSocketController::activate(const QJsonObject &rawConfig) {
-  QString protocolName = rawConfig.value("protocol").toString();
+    ++m_activationGeneration;
+    if (m_daemonState != eReady || m_deactivating) {
+        m_pendingActivation = rawConfig;
+        if (m_daemonState == eUnknown || m_daemonState == eDisconnected) {
+            m_initializingRetry = 0;
+            initializeInternal();
+        }
+        return;
+    }
+    m_pendingActivation = { };
+    QString protocolName = rawConfig.value("protocol").toString();
 
-  int splitTunnelType = rawConfig.value("splitTunnelType").toInt();
-  QJsonArray splitTunnelSites = rawConfig.value("splitTunnelSites").toArray();
+    int splitTunnelType = rawConfig.value("splitTunnelType").toInt();
+    QJsonArray splitTunnelSites = rawConfig.value("splitTunnelSites").toArray();
 
-  int appSplitTunnelType = rawConfig.value(amnezia::configKey::appSplitTunnelType).toInt();
-  QJsonArray splitTunnelApps = rawConfig.value(amnezia::configKey::splitTunnelApps).toArray();
-  QJsonArray allowedDns = rawConfig.value(amnezia::configKey::allowedDnsServers).toArray();
+    int appSplitTunnelType = rawConfig.value(amnezia::configKey::appSplitTunnelType).toInt();
+    QJsonArray splitTunnelApps = rawConfig.value(amnezia::configKey::splitTunnelApps).toArray();
+    QJsonArray allowedDns = rawConfig.value(amnezia::configKey::allowedDnsServers).toArray();
 
-  QJsonObject wgConfig = rawConfig.value(protocolName + "_config_data").toObject();
+    QJsonObject wgConfig = rawConfig.value(protocolName + "_config_data").toObject();
 
-  QJsonObject json;
-  json.insert("type", "activate");
+    QJsonObject json;
+    json.insert("type", "activate");
+    if (rawConfig.value(QStringLiteral("hopType")).isString()) {
+        json.insert(QStringLiteral("hopType"), rawConfig.value(QStringLiteral("hopType")));
+    }
   //  json.insert("hopindex", QJsonValue((double)hop.m_hopindex));
   json.insert("privateKey", wgConfig.value(amnezia::configKey::clientPrivKey));
   json.insert("deviceIpv4Address", wgConfig.value(amnezia::configKey::clientIp));
@@ -148,7 +199,9 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
   // https://man7.org/linux/man-pages/man5/gai.conf.5.html
 
   // simply "dead::1" is globally-routable, don't use it
-  json.insert("deviceIpv6Address", "fd58:baa6:dead::1");
+  if (rawConfig.value(QStringLiteral("hopType")).toString() != QStringLiteral("MultiHopEntry")) {
+      json.insert("deviceIpv6Address", "fd58:baa6:dead::1");
+  }
 
   json.insert("serverPublicKey", wgConfig.value(amnezia::configKey::serverPubKey));
   json.insert("serverPskKey", wgConfig.value(amnezia::configKey::pskKey));
@@ -156,7 +209,7 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
   //  json.insert("serverIpv6AddrIn", QJsonValue(hop.m_server.ipv6AddrIn()));
   json.insert("deviceMTU", wgConfig.value(amnezia::configKey::mtu));
 
-  json.insert("serverPort", wgConfig.value(amnezia::configKey::port).toInt());
+  json.insert("serverPort", wgConfig.value(amnezia::configKey::port).toVariant().toInt());
   json.insert("serverIpv4Gateway", wgConfig.value(amnezia::configKey::hostName));
   //  json.insert("serverIpv6Gateway", QJsonValue(hop.m_server.ipv6Gateway()));
 
@@ -261,22 +314,48 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
     }
   }
 
+  m_peerPublicKey = json.value(QStringLiteral("serverPublicKey")).toString();
+  m_activationSent = true;
   write(json);
 }
 
 void LocalSocketController::deactivate() {
   logger.debug() << "Deactivating";
+  ++m_activationGeneration;
+  m_pendingActivation = { };
+  m_statusTimer.stop();
 
-  if (m_daemonState != eReady) {
-    logger.debug() << "No disconnect, controller is not ready";
-    emit disconnected();
-    return;
+  if (!m_activationSent) {
+      logger.debug() << "No disconnect, controller is not ready";
+      if (m_daemonState != eReady) {
+          m_daemonState = eDisconnected;
+          m_initializingTimer.stop();
+          m_socket->abort();
+      }
+      disconnectInternal();
+      return;
+  }
+  if (m_deactivating) {
+      return;
   }
 
-  QJsonObject json;
-  json.insert("type", "deactivate");
-  write(json);
-  emit disconnected();
+  m_deactivating = true;
+  if (m_daemonState == eReady) {
+      requestDeactivation();
+  } else if (!m_initializingTimer.isActive()) {
+      m_initializingRetry = 0;
+      initializeInternal();
+  }
+}
+
+void LocalSocketController::requestDeactivation()
+{
+    if (!m_activationSent || !m_deactivating || m_daemonState != eReady) {
+        return;
+    }
+    QJsonObject json;
+    json.insert("type", "deactivate");
+    write(json);
 }
 
 void LocalSocketController::checkStatus() {
@@ -334,7 +413,10 @@ void LocalSocketController::readData() {
   logger.debug() << "Reading";
 
   Q_ASSERT(m_socket);
-  Q_ASSERT(m_daemonState == eInitializing || m_daemonState == eReady);
+  if (m_daemonState != eInitializing && m_daemonState != eReady) {
+      m_socket->readAll();
+      return;
+  }
   QByteArray input = m_socket->readAll();
   m_buffer.append(input);
 
@@ -376,7 +458,6 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
   logger.debug() << "Parse command:" << type;
 
   if (m_daemonState == eInitializing && type == "status") {
-    m_daemonState = eReady;
 
     QJsonValue connected = obj.value("connected");
     if (!connected.isBool()) {
@@ -399,7 +480,18 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
       }
     }
 
+    m_daemonState = eReady;
+    m_initializingRetry = 0;
+    m_initializingTimer.stop();
+    if (m_activationSent && m_deactivating) {
+        requestDeactivation();
+        return;
+    }
     emit initialized(true, connected.toBool(), datetime);
+    if (m_daemonState == eReady && !m_pendingActivation.isEmpty()) {
+        const QJsonObject pending = std::exchange(m_pendingActivation, { });
+        activate(pending);
+    }
     return;
   }
 
@@ -409,6 +501,13 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
   }
 
   if (type == "status") {
+      if (m_statusTimer.isActive() && obj.value(QStringLiteral("connected")) == QJsonValue(false)) {
+          deactivate();
+          return;
+      }
+      if (!m_activationSent || m_deactivating) {
+          return;
+      }
 
     QJsonValue serverIpv4Gateway = obj.value("serverIpv4Gateway");
     if (!serverIpv4Gateway.isString()) {
@@ -441,7 +540,15 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
   }
 
   if (type == "disconnected") {
-    disconnectInternal();
+      if (!m_activationSent) {
+          return;
+      }
+      const quint64 generation = m_activationGeneration;
+      const QJsonObject pending = m_pendingActivation;
+      disconnectInternal();
+      if (generation == m_activationGeneration && !pending.isEmpty()) {
+          activate(pending);
+      }
     return;
   }
 
@@ -451,19 +558,29 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
       logger.error() << "Unexpected pubkey value";
       return;
     }
+    if (!m_activationSent || m_deactivating || m_statusTimer.isActive() || pubkey.toString() != m_peerPublicKey) {
+        return;
+    }
 
     logger.debug() << "Handshake completed with:"
                    << pubkey.toString();
 
     checkStatus();
+    m_statusTimer.start();
 
+    const quint64 generation = m_activationGeneration;
     emit statusUpdated("", m_deviceIpv4, 0, 0);
 
-    emit connected(pubkey.toString());
+    if (generation == m_activationGeneration && m_activationSent && !m_deactivating) {
+        emit connected(pubkey.toString());
+    }
     return;
   }
 
   if (type == "backendFailure") {
+      if (m_activationSent && m_deactivating) {
+          m_deactivationRetryTimer.start();
+      }
     if (!obj.contains("errorCode")) {
       // report a generic error if we dont know what it is.
       logger.error() << "generic backend failure error";

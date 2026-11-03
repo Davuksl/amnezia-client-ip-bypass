@@ -285,87 +285,97 @@ bool WindowsFirewall::allowTrafficRange(const QStringList& ranges) {
   return true;
 }
 
-
-bool WindowsFirewall::enablePeerTraffic(const InterfaceConfig& config) {
-  // Start the firewall transaction
-  auto result = FwpmTransactionBegin(m_sessionHandle, NULL);
-  if (result != ERROR_SUCCESS) {
-    disableKillSwitch();
-    return false;
-  }
-  auto cleanup = qScopeGuard([&] {
-    FwpmTransactionAbort0(m_sessionHandle);
-    disableKillSwitch();
-  });
-
-  // Build the firewall rules for this peer.
-  logger.info() << "Enabling traffic for peer"
-                << config.m_serverPublicKey;
-  if (!blockTrafficTo(config.m_allowedIPAddressRanges, LOW_WEIGHT,
-                      "Block Internet", config.m_serverPublicKey)) {
-    return false;
-  }
-  if (!config.m_primaryDnsServer.isEmpty()) {
-    if (!allowTrafficTo(QHostAddress(config.m_primaryDnsServer), 53, HIGH_WEIGHT,
-                        "Allow DNS-Server", config.m_serverPublicKey)) {
-      return false;
-    }
-    // In some cases, we might configure a 2nd DNS server for IPv6, however
-    // this should probably be cleaned up by converting m_dnsServer into
-    // a QStringList instead.
-    if (config.m_primaryDnsServer == config.m_serverIpv4Gateway) {
-      if (!allowTrafficTo(QHostAddress(config.m_serverIpv6Gateway), 53,
-                          HIGH_WEIGHT, "Allow extra IPv6 DNS-Server",
-                          config.m_serverPublicKey)) {
+bool WindowsFirewall::enablePeerTraffic(const InterfaceConfig &config, const QHostAddress &underlayAddress,
+                                        const QHostAddress &underlayServerAddress)
+{
+    const bool hasUnderlay = !underlayAddress.isNull() || !underlayServerAddress.isNull();
+    if (hasUnderlay
+        && (underlayAddress.protocol() != QAbstractSocket::IPv4Protocol
+            || underlayServerAddress.protocol() != QAbstractSocket::IPv4Protocol)) {
         return false;
-      }
     }
-  }
-
-  if (!config.m_secondaryDnsServer.isEmpty()) {
-    if (!allowTrafficTo(QHostAddress(config.m_secondaryDnsServer), 53, HIGH_WEIGHT,
-                        "Allow DNS-Server", config.m_serverPublicKey)) {
-      return false;
-    }
-    // In some cases, we might configure a 2nd DNS server for IPv6, however
-    // this should probably be cleaned up by converting m_dnsServer into
-    // a QStringList instead.
-    if (config.m_secondaryDnsServer == config.m_serverIpv4Gateway) {
-      if (!allowTrafficTo(QHostAddress(config.m_serverIpv6Gateway), 53,
-                          HIGH_WEIGHT, "Allow extra IPv6 DNS-Server",
-                          config.m_serverPublicKey)) {
+    // Start the firewall transaction
+    auto result = FwpmTransactionBegin(m_sessionHandle, NULL);
+    if (result != ERROR_SUCCESS) {
         return false;
-      }
     }
-  }
+    const auto activeRules = m_activeRules;
+    const auto peerRules = m_peerRules;
+    auto cleanup = qScopeGuard([&] {
+        FwpmTransactionAbort0(m_sessionHandle);
+        m_activeRules = activeRules;
+        m_peerRules = peerRules;
+    });
 
-  for (const QString& dns : config.m_allowedDnsServers) {
-    logger.debug() << "Allow DNS: " << dns;
-    if (!allowTrafficTo(QHostAddress(dns), 53, HIGH_WEIGHT,
-                        "Allow DNS-Server", config.m_serverPublicKey)) {
-      return false;
-    }
-  }
-
-  if (!config.m_excludedAddresses.empty()) {
-    for (const QString& i : config.m_excludedAddresses) {
-      logger.debug() << "excludedAddresses range: " << i;
-
-      if (!allowTrafficTo(i, HIGH_WEIGHT,
-                          "Allow Ecxlude route", config.m_serverPublicKey)) {
+    // Build the firewall rules for this peer.
+    logger.info() << "Enabling traffic for peer" << config.m_serverPublicKey;
+    if (!blockTrafficTo(config.m_allowedIPAddressRanges, LOW_WEIGHT, "Block Internet", config.m_serverPublicKey)) {
         return false;
-      }
     }
-  }
+    if (!config.m_primaryDnsServer.isEmpty()) {
+        if (!allowTrafficTo(QHostAddress(config.m_primaryDnsServer), 53, HIGH_WEIGHT, "Allow DNS-Server",
+                            config.m_serverPublicKey)) {
+            return false;
+        }
+        // In some cases, we might configure a 2nd DNS server for IPv6, however
+        // this should probably be cleaned up by converting m_dnsServer into
+        // a QStringList instead.
+        if (config.m_primaryDnsServer == config.m_serverIpv4Gateway) {
+            if (!allowTrafficTo(QHostAddress(config.m_serverIpv6Gateway), 53, HIGH_WEIGHT,
+                                "Allow extra IPv6 DNS-Server", config.m_serverPublicKey)) {
+                return false;
+            }
+        }
+    }
 
-  result = FwpmTransactionCommit0(m_sessionHandle);
-  if (result != ERROR_SUCCESS) {
-    logger.error() << "FwpmTransactionCommit0 failed with error:" << result;
-    return false;
-  }
+    if (!config.m_secondaryDnsServer.isEmpty()) {
+        if (!allowTrafficTo(QHostAddress(config.m_secondaryDnsServer), 53, HIGH_WEIGHT, "Allow DNS-Server",
+                            config.m_serverPublicKey)) {
+            return false;
+        }
+        // In some cases, we might configure a 2nd DNS server for IPv6, however
+        // this should probably be cleaned up by converting m_dnsServer into
+        // a QStringList instead.
+        if (config.m_secondaryDnsServer == config.m_serverIpv4Gateway) {
+            if (!allowTrafficTo(QHostAddress(config.m_serverIpv6Gateway), 53, HIGH_WEIGHT,
+                                "Allow extra IPv6 DNS-Server", config.m_serverPublicKey)) {
+                return false;
+            }
+        }
+    }
 
-  cleanup.dismiss();
-  return true;
+    for (const QString &dns : config.m_allowedDnsServers) {
+        logger.debug() << "Allow DNS: " << dns;
+        if (!allowTrafficTo(QHostAddress(dns), 53, HIGH_WEIGHT, "Allow DNS-Server", config.m_serverPublicKey)) {
+            return false;
+        }
+    }
+
+    if (!config.m_excludedAddresses.empty()) {
+        for (const QString &i : config.m_excludedAddresses) {
+            logger.debug() << "excludedAddresses range: " << i;
+
+            if (!allowTrafficTo(i, HIGH_WEIGHT, "Allow Ecxlude route", config.m_serverPublicKey)) {
+                return false;
+            }
+        }
+    }
+
+    if (hasUnderlay
+        && !allowTrafficTo(IPAddress(underlayServerAddress), HIGH_WEIGHT,
+                           QStringLiteral("Permit VPN transport through underlay"), config.m_serverPublicKey,
+                           underlayAddress)) {
+        return false;
+    }
+
+    result = FwpmTransactionCommit0(m_sessionHandle);
+    if (result != ERROR_SUCCESS) {
+        logger.error() << "FwpmTransactionCommit0 failed with error:" << result;
+        return false;
+    }
+
+    cleanup.dismiss();
+    return true;
 }
 
 bool WindowsFirewall::disablePeerTraffic(const QString& pubkey) {
@@ -536,54 +546,61 @@ bool WindowsFirewall::allowTrafficOfAdapter(int networkAdapter, uint8_t weight,
   return true;
 }
 
-bool WindowsFirewall::allowTrafficTo(const IPAddress& addr, int weight,
-                                     const QString& title,
-                                     const QString& peer) {
-  GUID layerKeyOut;
-  GUID layerKeyIn;
-  if (addr.type() == QAbstractSocket::IPv4Protocol) {
-    layerKeyOut = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
-    layerKeyIn = FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4;
-  } else {
-    layerKeyOut = FWPM_LAYER_ALE_AUTH_CONNECT_V6;
-    layerKeyIn = FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6;
-  }
+bool WindowsFirewall::allowTrafficTo(const IPAddress &addr, int weight, const QString &title, const QString &peer,
+                                     const QHostAddress &sourceAddress)
+{
+    GUID layerKeyOut;
+    GUID layerKeyIn;
+    if (addr.type() == QAbstractSocket::IPv4Protocol) {
+        layerKeyOut = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+        layerKeyIn = FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4;
+    } else {
+        layerKeyOut = FWPM_LAYER_ALE_AUTH_CONNECT_V6;
+        layerKeyIn = FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6;
+    }
 
-  // Match the IP address range.
-  FWPM_FILTER_CONDITION0 cond[1] = {};
-  FWP_RANGE0 ipRange;
-  QByteArray lowIpV6Buffer;
-  QByteArray highIpV6Buffer;
+    // Match the IP address range.
+    FWPM_FILTER_CONDITION0 cond[2] = { };
+    FWP_RANGE0 ipRange;
+    QByteArray lowIpV6Buffer;
+    QByteArray highIpV6Buffer;
 
-  importAddress(addr.address(), ipRange.valueLow, &lowIpV6Buffer);
-  importAddress(addr.broadcastAddress(), ipRange.valueHigh, &highIpV6Buffer);
+    importAddress(addr.address(), ipRange.valueLow, &lowIpV6Buffer);
+    importAddress(addr.broadcastAddress(), ipRange.valueHigh, &highIpV6Buffer);
 
-  cond[0].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
-  cond[0].matchType = FWP_MATCH_RANGE;
-  cond[0].conditionValue.type = FWP_RANGE_TYPE;
-  cond[0].conditionValue.rangeValue = &ipRange;
+    cond[0].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+    cond[0].matchType = FWP_MATCH_RANGE;
+    cond[0].conditionValue.type = FWP_RANGE_TYPE;
+    cond[0].conditionValue.rangeValue = &ipRange;
 
-  // Assemble the Filter base
-  FWPM_FILTER0 filter;
-  memset(&filter, 0, sizeof(filter));
-  filter.action.type = FWP_ACTION_PERMIT;
-  filter.weight.type = FWP_UINT8;
-  filter.weight.uint8 = weight;
-  filter.subLayerKey = ST_FW_WINFW_BASELINE_SUBLAYER_KEY;
-  filter.numFilterConditions = 1;
-  filter.filterCondition = cond;
+    QByteArray sourceBuffer;
+    if (!sourceAddress.isNull()) {
+        cond[1].fieldKey = FWPM_CONDITION_IP_LOCAL_ADDRESS;
+        cond[1].matchType = FWP_MATCH_EQUAL;
+        importAddress(sourceAddress, cond[1].conditionValue, &sourceBuffer);
+    }
 
-  // Send the filters down to the firewall.
-  QString description = "Permit traffic %1 " + addr.toString();
-  filter.layerKey = layerKeyOut;
-  if (!enableFilter(&filter, title, description.arg("to"), peer)) {
-    return false;
-  }
-  filter.layerKey = layerKeyIn;
-  if (!enableFilter(&filter, title, description.arg("from"), peer)) {
-    return false;
-  }
-  return true;
+    // Assemble the Filter base
+    FWPM_FILTER0 filter;
+    memset(&filter, 0, sizeof(filter));
+    filter.action.type = FWP_ACTION_PERMIT;
+    filter.weight.type = FWP_UINT8;
+    filter.weight.uint8 = weight;
+    filter.subLayerKey = ST_FW_WINFW_BASELINE_SUBLAYER_KEY;
+    filter.numFilterConditions = sourceAddress.isNull() ? 1 : 2;
+    filter.filterCondition = cond;
+
+    // Send the filters down to the firewall.
+    QString description = "Permit traffic %1 " + addr.toString();
+    filter.layerKey = layerKeyOut;
+    if (!enableFilter(&filter, title, description.arg("to"), peer)) {
+        return false;
+    }
+    filter.layerKey = layerKeyIn;
+    if (!enableFilter(&filter, title, description.arg("from"), peer)) {
+        return false;
+    }
+    return true;
 }
 
 bool WindowsFirewall::allowTrafficTo(const QHostAddress& targetIP, uint port,

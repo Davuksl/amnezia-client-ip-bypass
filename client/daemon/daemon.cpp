@@ -78,8 +78,11 @@ bool Daemon::activate(const InterfaceConfig& config) {
         return false;
       }
 
-      if (!dnsutils()->restoreResolvers()) {
-        return false;
+      if (m_resolversChanged) {
+          if (!dnsutils()->restoreResolvers()) {
+              return false;
+          }
+          m_resolversChanged = false;
       }
 
       if (!maybeUpdateResolvers(config)) {
@@ -133,7 +136,9 @@ bool Daemon::activate(const InterfaceConfig& config) {
 
   // Configure routing for excluded addresses.
   for (const QString& i : config.m_excludedAddresses) {
-    addExclusionRoute(IPAddress(i));
+      if (!addExclusionRoute(IPAddress(i))) {
+          return false;
+      }
   }
 
   // Add the peer to this interface.
@@ -180,6 +185,7 @@ bool Daemon::maybeUpdateResolvers(const InterfaceConfig& config) {
       resolvers.append(QHostAddress(config.m_serverIpv6Gateway));
     }
 
+    m_resolversChanged = true;
     if (!dnsutils()->updateResolvers(wgutils()->interfaceName(), resolvers)) {
       return false;
     }
@@ -476,6 +482,7 @@ bool Daemon::parseConfig(const QJsonObject& obj, InterfaceConfig& config) {
 
 bool Daemon::deactivate(bool emitSignals) {
   Q_ASSERT(wgutils() != nullptr);
+  m_handshakeTimer.stop();
 
   // Deactivate the main interface.
   if (!m_connections.isEmpty()) {
@@ -485,13 +492,13 @@ bool Daemon::deactivate(bool emitSignals) {
     }
   }
 
-  if (emitSignals) {
-    emit disconnected();
-  }
-
   // Cleanup DNS
-  if (!dnsutils()->restoreResolvers()) {
-    logger.warning() << "Failed to restore DNS resolvers.";
+  if (m_resolversChanged) {
+      if (dnsutils()->restoreResolvers()) {
+          m_resolversChanged = false;
+      } else {
+          logger.warning() << "Failed to restore DNS resolvers.";
+      }
   }
 
   // Cleanup peers and routing
@@ -513,7 +520,11 @@ bool Daemon::deactivate(bool emitSignals) {
 
   m_connections.clear();
   // Delete the interface
-  return wgutils()->deleteInterface();
+  const bool removed = wgutils()->deleteInterface();
+  if (removed && emitSignals) {
+      emit disconnected();
+  }
+  return removed;
 }
 
 QString Daemon::logs() {
@@ -594,6 +605,10 @@ QJsonObject Daemon::getStatus() {
   }
 
   const ConnectionState& connection = m_connections.first();
+  if (!connection.m_date.isValid()) {
+      json.insert("connected", QJsonValue(false));
+      return json;
+  }
   QList<WireguardUtils::PeerStatus> peers = wgutils()->getPeerStatus();
   for (const WireguardUtils::PeerStatus& status : peers) {
     if (status.m_pubkey != connection.m_config.m_serverPublicKey) {
@@ -633,9 +648,9 @@ void Daemon::checkHandshake() {
       if (config.m_serverPublicKey != status.m_pubkey) {
         continue;
       }
-      if (status.m_handshake != 0) {
-        connection.m_date.setMSecsSinceEpoch(status.m_handshake);
-        emit connected(status.m_pubkey);
+      if (status.m_handshake != 0 && wgutils()->isInterfaceReady(config)) {
+          connection.m_date.setMSecsSinceEpoch(status.m_handshake);
+          emit connected(status.m_pubkey);
       }
     }
 

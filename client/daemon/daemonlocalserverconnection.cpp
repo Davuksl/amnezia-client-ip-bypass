@@ -113,13 +113,19 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
 
     if (!Daemon::instance()->activate(config)) {
       logger.error() << "Failed to activate the interface";
-      emit disconnected();
+      if (Daemon::instance()->deactivate(false)) {
+          disconnected();
+      } else {
+          backendFailure(DaemonError::ERROR_FATAL);
+      }
     }
     return;
   }
 
   if (type == "deactivate") {
-    Daemon::instance()->deactivate(true);
+      if (!Daemon::instance()->deactivate(true)) {
+          backendFailure(DaemonError::ERROR_FATAL);
+      }
     return;
   }
 

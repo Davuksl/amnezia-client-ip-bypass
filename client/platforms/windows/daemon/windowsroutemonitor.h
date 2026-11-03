@@ -21,14 +21,17 @@ class WindowsRouteMonitor final : public QObject {
   Q_OBJECT
 
  public:
-  WindowsRouteMonitor(quint64 luid, QObject* parent);
-  ~WindowsRouteMonitor();
+     WindowsRouteMonitor(quint64 luid, QObject *parent, bool defaultRouteOnly = false);
+     ~WindowsRouteMonitor();
 
-  void setDetaultRouteCapture(bool enable);
+     void setDetaultRouteCapture(bool enable);
 
-  bool addExclusionRoute(const IPAddress& prefix);
-  bool deleteExclusionRoute(const IPAddress& prefix);
-  void flushExclusionRoutes() { return flushRouteTable(m_exclusionRoutes); };
+     bool addExclusionRoute(const IPAddress &prefix);
+     bool deleteExclusionRoute(const IPAddress &prefix);
+     void flushExclusionRoutes()
+     {
+         return flushRouteTable(m_exclusionRoutes);
+     };
 
   quint64 getLuid() const { return m_luid; }
 
@@ -42,7 +45,7 @@ class WindowsRouteMonitor final : public QObject {
   static QHostAddress prefixToAddress(const IP_ADDRESS_PREFIX* dest);
 
   void flushRouteTable(QHash<IPAddress, MIB_IPFORWARD_ROW2*>& table);
-  void updateExclusionRoute(MIB_IPFORWARD_ROW2* data, void* table);
+  bool updateExclusionRoute(MIB_IPFORWARD_ROW2 *data, void *table);
   void updateInterfaceMetrics(int family);
   void updateCapturedRoutes(int family);
   void updateCapturedRoutes(int family, void* table);
@@ -56,6 +59,7 @@ class WindowsRouteMonitor final : public QObject {
   QHash<IPAddress, MIB_IPFORWARD_ROW2*> m_clonedRoutes;
 
   const quint64 m_luid = 0;
+  const bool m_defaultRouteOnly;
   HANDLE m_routeHandle = INVALID_HANDLE_VALUE;
 };
 

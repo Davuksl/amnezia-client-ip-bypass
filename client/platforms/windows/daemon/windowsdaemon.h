@@ -41,6 +41,7 @@ class WindowsDaemon final : public Daemon {
   };
 
   int m_inetAdapterIndex = -1;
+  bool m_routeOnly = false;
 
   std::unique_ptr<WireguardUtilsWindows> m_wgutils;
   DnsUtilsWindows* m_dnsutils = nullptr;

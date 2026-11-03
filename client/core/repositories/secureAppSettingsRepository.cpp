@@ -577,3 +577,13 @@ void SecureAppSettingsRepository::setLocalProxyPortUserDefined(bool userDefined)
 {
     setValue("Conf/localProxyPortUserDefined", userDefined);
 }
+
+QByteArray SecureAppSettingsRepository::warpUnderlayRegistration() const
+{
+    return value("Conf/warpUnderlayRegistration").toByteArray();
+}
+
+void SecureAppSettingsRepository::setWarpUnderlayRegistration(const QByteArray &data)
+{
+    setValue("Conf/warpUnderlayRegistration", data);
+}

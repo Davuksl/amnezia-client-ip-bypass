@@ -11,7 +11,7 @@ class IpcClient : public QObject
 {
     Q_OBJECT
 public:
-    explicit IpcClient(QObject *parent = nullptr);
+    explicit IpcClient(QObject *parent = nullptr, const QUrl &serviceUrl = { });
 
     static IpcClient& Instance();
 
@@ -49,6 +49,10 @@ public:
 signals:
 
 private:
+#ifdef AMNEZIA_BUILD_TESTS
+    friend class IpcTestService;
+    static IpcClient *s_testInstance;
+#endif
     QRemoteObjectNode m_node;
     QSharedPointer<IpcInterfaceReplica> m_interface;
 };

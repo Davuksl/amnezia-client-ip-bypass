@@ -114,6 +114,9 @@ public:
     bool isLocalProxyPortUserDefined() const;
     void setLocalProxyPortUserDefined(bool userDefined);
 
+    QByteArray warpUnderlayRegistration() const;
+    void setWarpUnderlayRegistration(const QByteArray &data);
+
 signals:
     void appLanguageChanged(QLocale locale);
     void allowedDnsServersChanged(const QStringList &servers);

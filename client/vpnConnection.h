@@ -1,12 +1,13 @@
 #ifndef VPNCONNECTION_H
 #define VPNCONNECTION_H
 
-#include <QObject>
 #include <QMetaObject>
-#include <QString>
-#include <QScopedPointer>
+#include <QObject>
 #include <QRemoteObjectNode>
+#include <QScopedPointer>
+#include <QString>
 #include <QTimer>
+#include <functional>
 
 #include "core/protocols/vpnProtocol.h"
 #include "core/utils/errorCodes.h"
@@ -73,15 +74,21 @@ protected:
     QSharedPointer<VpnProtocol> m_vpnProtocol;
 
 private:
+#ifdef AMNEZIA_BUILD_TESTS
+    friend class TestVpnLifecycle;
+#endif
+    QSharedPointer<VpnProtocol> m_underlayProtocol;
     SecureServersRepository* m_serversRepository;
     SecureAppSettingsRepository* m_appSettingsRepository;
 
     QJsonObject m_vpnConfiguration;
+    QJsonObject m_underlayConfiguration;
     QJsonObject m_routeMode;
     QString m_remoteAddress;
 
     // Only for iOS for now, check counters
     QTimer m_checkTimer;
+    QTimer m_underlayTimer;
 
 #ifdef Q_OS_ANDROID
    AndroidVpnProtocol* androidVpnProtocol = nullptr;
@@ -91,11 +98,33 @@ private:
 #endif
 
    Vpn::ConnectionState m_connectionState;
+   bool m_useWarpUnderlay = false;
+   bool m_mainProtocolStarted = false;
+   bool m_underlayStopping = false;
+   int m_activeOperations = 0;
+   bool m_disconnecting = false;
+   bool m_mainRestartPending = false;
+   bool m_underlayRestartPending = false;
+   bool m_recoveringUnderlay = false;
+   int m_underlayRestartDelay = 0;
+   quint64 m_generation = 0;
+   ErrorCode m_disconnectError = ErrorCode::NoError;
+   std::function<void()> m_pendingConnection;
 
    void createProtocolConnections();
+   void startPreparedProtocol();
+   void startWarpUnderlay();
+   void stopWarpUnderlay();
+   void retryWarpUnderlay(ErrorCode error, int delay = 0);
+   void onProtocolStateChanged(Vpn::ConnectionState state);
+   void onUnderlayStateChanged(Vpn::ConnectionState state);
+   void stopProtocols(ErrorCode error = ErrorCode::NoError);
+   void finishDisconnect();
+   void finishProtocolOperation();
 
    void appendSplitTunnelingConfig();
    void appendKillSwitchConfig();
+   bool prepareWarpUnderlay(quint64 generation);
 };
 
 #endif // VPNCONNECTION_H

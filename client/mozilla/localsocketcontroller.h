@@ -6,6 +6,7 @@
 #define LOCALSOCKETCONTROLLER_H
 
 #include <QHostAddress>
+#include <QJsonObject>
 #include <QLocalSocket>
 #include <QTimer>
 #include <functional>
@@ -19,26 +20,30 @@ class LocalSocketController final : public ControllerImpl {
   Q_DISABLE_COPY_MOVE(LocalSocketController)
 
  public:
-  LocalSocketController();
-  ~LocalSocketController();
+     explicit LocalSocketController(const QString &socketPath = { });
+     ~LocalSocketController();
 
-  void initialize(const Device* device, const Keys* keys) override;
+     void initialize(const Device *device, const Keys *keys) override;
 
-  void activate(const QJsonObject& rawConfig) override;
+     void activate(const QJsonObject &rawConfig) override;
 
-  void deactivate() override;
+     void deactivate() override;
 
-  void checkStatus() override;
+     void checkStatus() override;
 
-  void getBackendLogs(std::function<void(const QString&)>&& callback) override;
+     void getBackendLogs(std::function<void(const QString &)> &&callback) override;
 
-  void cleanupBackendLogs() override;
+     void cleanupBackendLogs() override;
 
-  bool multihopSupported() override { return true; }
+     bool multihopSupported() override
+     {
+         return true;
+     }
 
  private:
   void initializeInternal();
   void disconnectInternal();
+  void requestDeactivation();
 
   void daemonConnected();
   void errorOccurred(QLocalSocket::LocalSocketError socketError);
@@ -58,11 +63,19 @@ class LocalSocketController final : public ControllerImpl {
   QLocalSocket* m_socket = nullptr;
 
   QByteArray m_buffer;
+  QString m_socketPath;
+  QJsonObject m_pendingActivation;
+  QString m_peerPublicKey;
+  quint64 m_activationGeneration = 0;
+  bool m_activationSent = false;
+  bool m_deactivating = false;
 
   QString m_deviceIpv4;
   std::function<void(const QString&)> m_logCallback = nullptr;
 
   QTimer m_initializingTimer;
+  QTimer m_statusTimer;
+  QTimer m_deactivationRetryTimer;
   uint32_t m_initializingRetry = 0;
 };
 

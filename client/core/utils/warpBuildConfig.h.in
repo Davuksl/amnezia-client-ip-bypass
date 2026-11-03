@@ -1,0 +1,12 @@
+#ifndef WARPBUILDCONFIG_H
+#define WARPBUILDCONFIG_H
+
+#include <QString>
+
+namespace amnezia::build_config
+{
+    inline const QString warpRegistrationEndpoints = QStringLiteral(R"AMNEZIA(@CLIENT_WARP_REGISTRATION_ENDPOINTS@)AMNEZIA");
+    inline const QString warpAwgInitPacket = QStringLiteral(R"AMNEZIA(@CLIENT_WARP_AWG_I1@)AMNEZIA");
+}
+
+#endif // WARPBUILDCONFIG_H

@@ -20,8 +20,13 @@ public:
 
     ErrorCode start() override;
     void stop() override;
+    ErrorCode restartTransport();
 
 private:
+#ifdef AMNEZIA_BUILD_TESTS
+    friend class TestVpnLifecycle;
+#endif
+    ErrorCode startTransport();
     ErrorCode setupRouting();
     ErrorCode startTun2Socks();
 
@@ -36,6 +41,7 @@ private:
 
     QSharedPointer<IpcProcessInterfaceReplica> m_tun2socksProcess;
     int m_tun2socksRetryCount = 0;
+    quint64 m_generation = 0;
     static constexpr int maxTun2SocksRetries = 5;
     static constexpr int tun2socksRetryDelayMs = 400;
 

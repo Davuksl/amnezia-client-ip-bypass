@@ -88,11 +88,29 @@ QList<WireguardUtils::PeerStatus> WireguardUtilsWindows::getPeerStatus() {
   return peerList;
 }
 
+bool WireguardUtilsWindows::isInterfaceReady(const InterfaceConfig &config) const
+{
+    if (config.m_hopType != InterfaceConfig::MultiHopEntry) {
+        return true;
+    }
+    const QHostAddress address(config.m_deviceIpv4Address.section(QLatin1Char('/'), 0, 0));
+    if (m_luid == 0 || address.protocol() != QAbstractSocket::IPv4Protocol) {
+        return false;
+    }
+    MIB_UNICASTIPADDRESS_ROW row;
+    InitializeUnicastIpAddressEntry(&row);
+    row.InterfaceLuid.Value = m_luid;
+    row.Address.Ipv4.sin_family = AF_INET;
+    row.Address.Ipv4.sin_addr.s_addr = htonl(address.toIPv4Address());
+    return GetUnicastIpAddressEntry(&row) == NO_ERROR && row.DadState == IpDadStatePreferred;
+}
+
 bool WireguardUtilsWindows::addInterface(const InterfaceConfig& config) {
-  QStringList addresses;
-  for (const IPAddress& ip : config.m_allowedIPAddressRanges) {
-    addresses.append(ip.toString());
-  }
+    m_managesFirewall = config.m_hopType != InterfaceConfig::MultiHopEntry;
+    QStringList addresses;
+    for (const IPAddress &ip : config.m_allowedIPAddressRanges) {
+        addresses.append(ip.toString());
+    }
 
   QMap<QString, QString> extraConfig;
   extraConfig["Table"] = "off";
@@ -124,14 +142,14 @@ bool WireguardUtilsWindows::addInterface(const InterfaceConfig& config) {
     return false;
   }
   m_luid = luid.Value;
-  m_routeMonitor = new WindowsRouteMonitor(luid.Value, this);
+  m_routeMonitor = new WindowsRouteMonitor(luid.Value, this, !m_managesFirewall);
 
-  if (config.m_killSwitchEnabled) {
-    // Enable the windows firewall
-    NET_IFINDEX ifindex;
-    ConvertInterfaceLuidToIndex(&luid, &ifindex);
-    m_firewall->allowAllTraffic();
-    m_firewall->enableInterface(ifindex);
+  if (m_managesFirewall && config.m_killSwitchEnabled) {
+      // Enable the windows firewall
+      NET_IFINDEX ifindex;
+      ConvertInterfaceLuidToIndex(&luid, &ifindex);
+      m_firewall->allowAllTraffic();
+      m_firewall->enableInterface(ifindex);
   }
 
   logger.debug() << "Registration completed";
@@ -139,12 +157,16 @@ bool WireguardUtilsWindows::addInterface(const InterfaceConfig& config) {
 }
 
 bool WireguardUtilsWindows::deleteInterface() {
-  if (m_routeMonitor) {
-    m_routeMonitor->deleteLater();
-  }
+    if (!m_tunnel.stop()) {
+        return false;
+    }
+    delete m_routeMonitor.data();
+    m_luid = 0;
 
-  m_firewall->disableKillSwitch();
-  m_tunnel.stop();
+    if (m_managesFirewall) {
+        m_firewall->disableKillSwitch();
+        m_managesFirewall = false;
+    }
   return true;
 }
 
@@ -154,9 +176,9 @@ bool WireguardUtilsWindows::updatePeer(const InterfaceConfig& config) {
   QByteArray pskKey =
       QByteArray::fromBase64(qPrintable(config.m_serverPskKey));
 
-  if (config.m_killSwitchEnabled) {
-    // Enable the windows firewall for this peer.
-    m_firewall->enablePeerTraffic(config);
+  if (m_managesFirewall && config.m_killSwitchEnabled) {
+      // Enable the windows firewall for this peer.
+      m_firewall->enablePeerTraffic(config);
   }
   logger.debug() << "Configuring peer" << publicKey.toHex()
                  << "via" << config.m_serverIpv4AddrIn;
@@ -195,7 +217,7 @@ bool WireguardUtilsWindows::updatePeer(const InterfaceConfig& config) {
 
   QString reply = m_tunnel.uapiCommand(message);
   logger.debug() << "DATA:" << reply;
-  return true;
+  return reply.split(QLatin1Char('\n')).contains(QStringLiteral("errno=0"));
 }
 
 bool WireguardUtilsWindows::deletePeer(const InterfaceConfig& config) {
@@ -209,7 +231,9 @@ bool WireguardUtilsWindows::deletePeer(const InterfaceConfig& config) {
   }
 
   // Disable the windows firewall for this peer.
-  m_firewall->disablePeerTraffic(config.m_serverPublicKey);
+  if (m_managesFirewall) {
+      m_firewall->disablePeerTraffic(config.m_serverPublicKey);
+  }
 
   QString message;
   QTextStream out(&message);

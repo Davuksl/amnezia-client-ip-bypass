@@ -147,3 +147,6 @@ DeveloperIdApplicationCertificate.p12
 DeveloperIdInstallerCertificate.p12
 
 gwenv.sh
+node_modules/
+.wrangler/
+.dev.vars*

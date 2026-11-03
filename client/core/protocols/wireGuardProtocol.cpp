@@ -2,7 +2,6 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QTcpSocket>
-#include <QThread>
 
 #include "wireGuardProtocol.h"
 #include "core/utils/networkUtilities.h"
@@ -45,7 +44,6 @@ WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, QObject *
 WireguardProtocol::~WireguardProtocol()
 {
     WireguardProtocol::stop();
-    QThread::msleep(200);
 }
 
 void WireguardProtocol::stop()
@@ -78,5 +76,9 @@ ErrorCode WireguardProtocol::stopMzImpl()
 ErrorCode WireguardProtocol::start()
 {
     resetStopGuard();
+    setConnectionState(Vpn::ConnectionState::Connecting);
+    if (m_stopped) {
+        return ErrorCode::NoError;
+    }
     return startMzImpl();
 }

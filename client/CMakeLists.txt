@@ -36,6 +36,10 @@ add_definitions(-DDEV_S3_ENDPOINT="$ENV{DEV_S3_ENDPOINT}")
 add_definitions(-DFREE_V2_ENDPOINT="$ENV{FREE_V2_ENDPOINT}")
 add_definitions(-DPREM_V1_ENDPOINT="$ENV{PREM_V1_ENDPOINT}")
 
+set(CLIENT_WARP_REGISTRATION_ENDPOINTS "$ENV{CLIENT_WARP_REGISTRATION_ENDPOINTS}" CACHE STRING
+    "HTTPS registration relay endpoints separated by pipes")
+set(CLIENT_WARP_AWG_I1 "$ENV{CLIENT_WARP_AWG_I1}" CACHE STRING "AmneziaWG WARP initial packet")
+
 if(WIN32 OR (APPLE AND NOT IOS) OR (LINUX AND NOT ANDROID))
     set(PACKAGES ${PACKAGES} Widgets HttpServer)
 endif()
@@ -160,6 +164,11 @@ file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/core/utils)
 configure_file(
     ${CMAKE_CURRENT_LIST_DIR}/core/utils/appUiConfig.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/core/utils/appUiConfig.h
+    @ONLY
+)
+configure_file(
+    ${CMAKE_CURRENT_LIST_DIR}/core/utils/warpBuildConfig.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/core/utils/warpBuildConfig.h
     @ONLY
 )
 configure_file(

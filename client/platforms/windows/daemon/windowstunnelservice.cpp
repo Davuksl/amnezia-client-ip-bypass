@@ -38,12 +38,10 @@ WindowsTunnelService::WindowsTunnelService(QObject* parent) : QObject(parent) {
   }
 
   // Is the service already running? Terminate it.
-  SC_HANDLE service =
-      OpenService((SC_HANDLE)m_scm, TUNNEL_SERVICE_NAME, SERVICE_ALL_ACCESS);
-  if (service != nullptr) {
-    logger.info() << "Tunnel already exists. Terminating it.";
-    stopAndDeleteTunnelService(service);
-    CloseServiceHandle(service);
+  m_service = OpenService((SC_HANDLE)m_scm, TUNNEL_SERVICE_NAME, SERVICE_ALL_ACCESS);
+  if (m_service != nullptr) {
+      logger.info() << "Tunnel already exists. Terminating it.";
+      stop();
   }
 
   connect(&m_timer, &QTimer::timeout, this, &WindowsTunnelService::timeout);
@@ -55,21 +53,22 @@ WindowsTunnelService::~WindowsTunnelService() {
   CloseServiceHandle((SC_HANDLE)m_scm);
 }
 
-void WindowsTunnelService::stop() {
-  SC_HANDLE service = (SC_HANDLE)m_service;
-  if (service) {
-    stopAndDeleteTunnelService(service);
-    CloseServiceHandle(service);
-    m_service = nullptr;
-  }
+bool WindowsTunnelService::stop()
+{
+    m_timer.stop();
+    SC_HANDLE service = (SC_HANDLE)m_service;
+    const bool stopped = !service || stopAndDeleteTunnelService(service);
+    if (service && stopped) {
+        CloseServiceHandle(service);
+        m_service = nullptr;
+    }
 
-  m_timer.stop();
-
-  if (m_logworker) {
-    m_logthread.quit();
-    m_logthread.wait();
-    m_logworker = nullptr;
-  }
+    if (m_logworker) {
+        m_logthread.quit();
+        m_logthread.wait();
+        m_logworker = nullptr;
+    }
+    return stopped;
 }
 
 bool WindowsTunnelService::isRunning() {
@@ -111,33 +110,21 @@ void WindowsTunnelService::timeout() {
 bool WindowsTunnelService::start(const QString& configData) {
   logger.debug() << "Starting the tunnel service";
 
+  if (!m_scm || !stop()) {
+      return false;
+  }
+  SC_HANDLE scm = (SC_HANDLE)m_scm;
+  m_service = OpenService(scm, TUNNEL_SERVICE_NAME, SERVICE_ALL_ACCESS);
+  if (m_service && !stop()) {
+      return false;
+  }
+
   m_logworker = new WindowsTunnelLogger(WindowsCommons::tunnelLogFile());
   m_logworker->moveToThread(&m_logthread);
   connect(&m_logthread, &QThread::finished, m_logworker, &QObject::deleteLater);
   m_logthread.start();
 
-  SC_HANDLE scm = (SC_HANDLE)m_scm;
-  SC_HANDLE service = nullptr;
-  auto guard = qScopeGuard([&] {
-    if (service) {
-      CloseServiceHandle(service);
-    }
-    m_logthread.quit();
-    m_logthread.wait();
-    delete m_logworker;
-    m_logworker = nullptr;
-  });
-
-  // Let's see if we have to delete a previous instance.
-  service = OpenService(scm, TUNNEL_SERVICE_NAME, SERVICE_ALL_ACCESS);
-  if (service) {
-    logger.debug() << "An existing service has been detected. Let's close it.";
-    if (!stopAndDeleteTunnelService(service)) {
-      return false;
-    }
-    CloseServiceHandle(service);
-    service = nullptr;
-  }
+  auto guard = qScopeGuard([this] { stop(); });
 
   QString serviceCmdline;
   {
@@ -148,15 +135,15 @@ bool WindowsTunnelService::start(const QString& configData) {
 
   logger.debug() << "Service:" << qApp->applicationFilePath();
 
-  service = CreateService(scm, TUNNEL_SERVICE_NAME, L"Amnezia VPN (tunnel)",
-                          SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
-                          SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
-                          (const wchar_t*)serviceCmdline.utf16(), nullptr, 0,
-                          TEXT("Nsi\0TcpIp\0"), nullptr, nullptr);
+  SC_HANDLE service =
+          CreateService(scm, TUNNEL_SERVICE_NAME, L"Amnezia VPN (tunnel)", SERVICE_ALL_ACCESS,
+                        SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+                        (const wchar_t *)serviceCmdline.utf16(), nullptr, 0, TEXT("Nsi\0TcpIp\0"), nullptr, nullptr);
   if (!service) {
     WindowsUtils::windowsLog("Failed to create the tunnel service");
     return false;
   }
+  m_service = service;
 
   SERVICE_DESCRIPTION sd = {
       (wchar_t*)L"Manages the Amnezia VPN tunnel connection"};
@@ -182,7 +169,6 @@ bool WindowsTunnelService::start(const QString& configData) {
   if (waitForServiceStatus(service, SERVICE_RUNNING)) {
     logger.debug() << "The tunnel service is up and running";
     guard.dismiss();
-    m_service = service;
     m_timer.start(WINDOWS_TUNNEL_MONITOR_TIMEOUT_MSEC);
     return true;
   }
@@ -198,7 +184,6 @@ bool WindowsTunnelService::start(const QString& configData) {
   logger.debug() << "The tunnel service exited with status:"
                  << status.dwWin32ExitCode << "-" << exitCodeToFailure(&status);
 
-  emit backendFailure();
   return false;
 }
 
@@ -214,9 +199,9 @@ static bool stopAndDeleteTunnelService(SC_HANDLE service) {
 
   if (status.dwCurrentState != SERVICE_STOPPED) {
     logger.debug() << "The service is not stopped yet.";
-    if (!ControlService(service, SERVICE_CONTROL_STOP, &status)) {
-      WindowsUtils::windowsLog("Failed to control the service");
-      return false;
+    if (status.dwCurrentState != SERVICE_STOP_PENDING && !ControlService(service, SERVICE_CONTROL_STOP, &status)) {
+        WindowsUtils::windowsLog("Failed to control the service");
+        return false;
     }
 
     if (!waitForServiceStatus(service, SERVICE_STOPPED)) {
@@ -227,9 +212,9 @@ static bool stopAndDeleteTunnelService(SC_HANDLE service) {
 
   logger.debug() << "Proceeding with the deletion";
 
-  if (!DeleteService(service)) {
-    WindowsUtils::windowsLog("Failed to delete the service");
-    return false;
+  if (!DeleteService(service) && GetLastError() != ERROR_SERVICE_MARKED_FOR_DELETE) {
+      WindowsUtils::windowsLog("Failed to delete the service");
+      return false;
   }
 
   return true;

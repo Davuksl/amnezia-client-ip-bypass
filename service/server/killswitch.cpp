@@ -288,7 +288,18 @@ bool KillSwitch::enablePeerTraffic(const QJsonObject &configStr) {
 
     // killSwitch toggle
     if (QVariant(configStr.value(amnezia::configKey::killSwitchOption).toString()).toBool()) {
-        WindowsFirewall::create(this)->enablePeerTraffic(config);
+        const bool hasUnderlay = configStr.contains(amnezia::configKey::underlayEndpoint);
+        const QHostAddress underlayAddress(configStr.value(amnezia::configKey::underlayAddress).toString());
+        const QHostAddress underlayServerAddress(configStr.value(amnezia::configKey::underlayServerAddress).toString());
+        if (hasUnderlay
+            && (underlayAddress.protocol() != QAbstractSocket::IPv4Protocol
+                || underlayServerAddress.protocol() != QAbstractSocket::IPv4Protocol)) {
+            return false;
+        }
+        if (!WindowsFirewall::create(this)->enablePeerTraffic(config, hasUnderlay ? underlayAddress : QHostAddress(),
+                                                              hasUnderlay ? underlayServerAddress : QHostAddress())) {
+            return false;
+        }
     }
 
     WindowsDaemon::instance()->prepareActivation(config, inetAdapterIndex);

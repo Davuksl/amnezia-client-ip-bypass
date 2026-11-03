@@ -1277,6 +1277,7 @@ jobs:
           - BackupExportImportTest
           - FavoriteLocationsRestoreTest
           - ConnectionTest
+          - WarpUnderlayTest
           - OpenSSLLibraryTest
           - GatewayServiceImportTest
 

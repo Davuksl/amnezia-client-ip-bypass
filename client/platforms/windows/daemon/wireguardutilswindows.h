@@ -27,6 +27,7 @@ class WireguardUtilsWindows final : public WireguardUtils {
   ~WireguardUtilsWindows();
 
   bool interfaceExists() override { return m_tunnel.isRunning(); }
+  bool isInterfaceReady(const InterfaceConfig &config) const override;
   QString interfaceName() override {
     return WireguardUtilsWindows::s_interfaceName();
   }
@@ -54,6 +55,7 @@ class WireguardUtilsWindows final : public WireguardUtils {
   void buildMibForwardRow(const IPAddress& prefix, void* row);
 
   quint64 m_luid = 0;
+  bool m_managesFirewall = false;
   WindowsTunnelService m_tunnel;
   QPointer<WindowsRouteMonitor> m_routeMonitor;
   QPointer<WindowsFirewall> m_firewall;

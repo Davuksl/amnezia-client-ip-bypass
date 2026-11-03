@@ -30,7 +30,7 @@ qt6_add_resources(TEST_QRC
 )
 
 set(_main_cpp "${CMAKE_CURRENT_SOURCE_DIR}/../main.cpp")
-get_filename_component(_main_cpp "${_main_cpp}" REALPATH)
+get_filename_component(_main_cpp "${_main_cpp}" ABSOLUTE)
 
 set(TEST_SOURCES ${SOURCES})
 list(REMOVE_ITEM TEST_SOURCES "${_main_cpp}")
@@ -259,6 +259,64 @@ if(NOT ANDROID)
         Qt6::Test
         test_common
     )
+
+    add_executable(test_warp_underlay
+        testWarpUnderlay.cpp
+    )
+
+    target_link_libraries(test_warp_underlay PRIVATE
+        Qt6::Test
+        test_common
+    )
+
+    if(WIN32 OR (APPLE AND NOT IOS AND NOT MACOS_NE) OR LINUX)
+        add_executable(test_local_socket_lifecycle testLocalSocketLifecycle.cpp)
+        target_link_libraries(test_local_socket_lifecycle PRIVATE Qt6::Test test_common)
+
+        add_executable(test_daemon_lifecycle
+            testDaemonLifecycle.cpp
+            ../daemon/daemon.cpp
+            ../daemon/daemon.h
+            ../daemon/daemonlocalserverconnection.cpp
+            ../daemon/daemonlocalserverconnection.h
+            ../daemon/interfaceconfig.h
+            ../daemon/wireguardutils.h
+            ../daemon/dnsutils.h
+        )
+        target_link_libraries(test_daemon_lifecycle PRIVATE Qt6::Test test_common)
+
+    endif()
+
+    if(WIN32)
+        add_executable(test_vpn_lifecycle testVpnLifecycle.cpp)
+        qt_add_repc_sources(test_vpn_lifecycle
+            ../../ipc/ipc_interface.rep
+            ../../ipc/ipc_process_interface.rep
+        )
+        target_link_libraries(test_vpn_lifecycle PRIVATE Qt6::Test test_common)
+
+        add_executable(test_windows_underlay_routing
+            testWindowsUnderlayRouting.cpp
+            ../platforms/windows/daemon/windowsroutemonitor.h
+        )
+        target_link_libraries(test_windows_underlay_routing PRIVATE Qt6::Test test_common iphlpapi)
+
+        add_executable(test_windows_tunnel_lifecycle
+            testWindowsTunnelLifecycle.cpp
+            ../platforms/windows/daemon/windowstunnelservice.h
+            ../platforms/windows/daemon/windowstunnellogger.cpp
+            ../platforms/windows/daemon/windowstunnellogger.h
+            ../platforms/windows/windowsutils.cpp
+        )
+        target_link_libraries(test_windows_tunnel_lifecycle PRIVATE Qt6::Test test_common)
+
+        add_executable(test_windows_underlay_firewall
+            testWindowsUnderlayFirewall.cpp
+            ../platforms/windows/windowsutils.cpp
+        )
+        target_include_directories(test_windows_underlay_firewall PRIVATE ../../service/server)
+        target_link_libraries(test_windows_underlay_firewall PRIVATE Qt6::Test test_common)
+    endif()
 
     add_executable(test_logs_controller
         testLogsController.cpp
@@ -490,6 +548,17 @@ if(NOT ANDROID)
     add_test(NAME BackupExportImportTest           COMMAND test_backup_export_import)
     add_test(NAME FavoriteLocationsRestoreTest     COMMAND test_favorite_locations_restore)
     add_test(NAME ConnectionTest                   COMMAND test_connection)
+    add_test(NAME WarpUnderlayTest                 COMMAND test_warp_underlay)
+    if(TARGET test_local_socket_lifecycle)
+        add_test(NAME LocalSocketLifecycleTest COMMAND test_local_socket_lifecycle)
+        add_test(NAME DaemonLifecycleTest COMMAND test_daemon_lifecycle)
+    endif()
+    if(WIN32)
+        add_test(NAME VpnLifecycleTest COMMAND test_vpn_lifecycle)
+        add_test(NAME WindowsUnderlayRoutingTest COMMAND test_windows_underlay_routing)
+        add_test(NAME WindowsTunnelLifecycleTest COMMAND test_windows_tunnel_lifecycle)
+        add_test(NAME WindowsUnderlayFirewallTest COMMAND test_windows_underlay_firewall)
+    endif()
     add_test(NAME OpenSSLLibraryTest               COMMAND test_openssl_library)
     add_test(NAME LogsControllerTest               COMMAND test_logs_controller)
 endif()

@@ -58,12 +58,13 @@ static int prefixcmp(const void* a, const void* b, size_t bits) {
   return 0;
 }
 
-WindowsRouteMonitor::WindowsRouteMonitor(quint64 luid, QObject* parent)
-    : QObject(parent), m_luid(luid) {
-  MZ_COUNT_CTOR(WindowsRouteMonitor);
-  logger.debug() << "WindowsRouteMonitor created.";
+WindowsRouteMonitor::WindowsRouteMonitor(quint64 luid, QObject *parent, bool defaultRouteOnly)
+    : QObject(parent), m_luid(luid), m_defaultRouteOnly(defaultRouteOnly)
+{
+    MZ_COUNT_CTOR(WindowsRouteMonitor);
+    logger.debug() << "WindowsRouteMonitor created.";
 
-  NotifyRouteChange2(AF_INET, routeChangeCallback, this, FALSE, &m_routeHandle);
+    NotifyRouteChange2(AF_INET, routeChangeCallback, this, FALSE, &m_routeHandle);
 }
 
 WindowsRouteMonitor::~WindowsRouteMonitor() {
@@ -115,95 +116,103 @@ void WindowsRouteMonitor::updateInterfaceMetrics(int family) {
   }
 }
 
-void WindowsRouteMonitor::updateExclusionRoute(MIB_IPFORWARD_ROW2* data,
-                                               void* ptable) {
-  PMIB_IPFORWARD_TABLE2 table = reinterpret_cast<PMIB_IPFORWARD_TABLE2>(ptable);
-  SOCKADDR_INET nexthop = {};
-  quint64 bestLuid = 0;
-  int bestMatch = -1;
-  ULONG bestMetric = ULONG_MAX;
+bool WindowsRouteMonitor::updateExclusionRoute(MIB_IPFORWARD_ROW2 *data, void *ptable)
+{
+    PMIB_IPFORWARD_TABLE2 table = reinterpret_cast<PMIB_IPFORWARD_TABLE2>(ptable);
+    SOCKADDR_INET nexthop = { };
+    quint64 bestLuid = 0;
+    int bestMatch = -1;
+    ULONG bestMetric = ULONG_MAX;
 
-  nexthop.si_family = data->DestinationPrefix.Prefix.si_family;
-  for (ULONG i = 0; i < table->NumEntries; i++) {
-    MIB_IPFORWARD_ROW2* row = &table->Table[i];
-    // Ignore routes into the VPN interface.
-    if (row->InterfaceLuid.Value == m_luid) {
-      continue;
-    }
-    if (row->DestinationPrefix.PrefixLength < bestMatch) {
-      continue;
-    }
-    // Ignore routes of our own creation.
-    if ((row->Protocol == data->Protocol) && (row->Metric == data->Metric)) {
-      continue;
+    nexthop.si_family = data->DestinationPrefix.Prefix.si_family;
+    for (ULONG i = 0; i < table->NumEntries; i++) {
+        MIB_IPFORWARD_ROW2 *row = &table->Table[i];
+        if (m_defaultRouteOnly && row->DestinationPrefix.PrefixLength != 0) {
+            continue;
+        }
+        // Ignore routes into the VPN interface.
+        if (row->InterfaceLuid.Value == m_luid) {
+            continue;
+        }
+        if (row->DestinationPrefix.PrefixLength < bestMatch) {
+            continue;
+        }
+        // Ignore routes of our own creation.
+        if ((row->Protocol == data->Protocol) && (row->Metric == data->Metric)) {
+            continue;
+        }
+
+        // Check if the routing table entry matches the destination.
+        if (!routeContainsDest(&row->DestinationPrefix, &data->DestinationPrefix)) {
+            continue;
+        }
+
+        // Compute the combined interface and routing metric.
+        ULONG routeMetric = row->Metric;
+        if (data->DestinationPrefix.Prefix.si_family == AF_INET6) {
+            if (!m_interfaceMetricsIpv6.contains(row->InterfaceLuid.Value)) {
+                continue;
+            }
+            routeMetric += m_interfaceMetricsIpv6[row->InterfaceLuid.Value];
+        } else if (data->DestinationPrefix.Prefix.si_family == AF_INET) {
+            if (!m_interfaceMetricsIpv4.contains(row->InterfaceLuid.Value)) {
+                continue;
+            }
+            routeMetric += m_interfaceMetricsIpv4[row->InterfaceLuid.Value];
+        } else {
+            // Unsupported destination address family.
+            continue;
+        }
+        if (routeMetric < row->Metric) {
+            routeMetric = ULONG_MAX;
+        }
+
+        // Prefer routes with lower metric if we find multiple matches
+        // with the same prefix length.
+        if ((row->DestinationPrefix.PrefixLength == bestMatch) && (routeMetric >= bestMetric)) {
+            continue;
+        }
+
+        // If we got here, then this is the longest prefix match so far.
+        memcpy(&nexthop, &row->NextHop, sizeof(SOCKADDR_INET));
+        bestMatch = row->DestinationPrefix.PrefixLength;
+        bestMetric = routeMetric;
+        if (bestMatch == data->DestinationPrefix.PrefixLength) {
+            bestLuid = 0; // Don't write to the table if we find an exact match.
+        } else {
+            bestLuid = row->InterfaceLuid.Value;
+        }
     }
 
-    // Check if the routing table entry matches the destination.
-    if (!routeContainsDest(&row->DestinationPrefix, &data->DestinationPrefix)) {
-      continue;
+    // If neither the interface nor next-hop have changed, then do nothing.
+    if (data->InterfaceLuid.Value == bestLuid && memcmp(&nexthop, &data->NextHop, sizeof(SOCKADDR_INET)) == 0) {
+        return bestMatch >= 0;
     }
 
-    // Compute the combined interface and routing metric.
-    ULONG routeMetric = row->Metric;
-    if (data->DestinationPrefix.Prefix.si_family == AF_INET6) {
-      if (!m_interfaceMetricsIpv6.contains(row->InterfaceLuid.Value)) {
-        continue;
-      }
-      routeMetric += m_interfaceMetricsIpv6[row->InterfaceLuid.Value];
-    } else if (data->DestinationPrefix.Prefix.si_family == AF_INET) {
-      if (!m_interfaceMetricsIpv4.contains(row->InterfaceLuid.Value)) {
-        continue;
-      }
-      routeMetric += m_interfaceMetricsIpv4[row->InterfaceLuid.Value];
-    } else {
-      // Unsupported destination address family.
-      continue;
-    }
-    if (routeMetric < row->Metric) {
-      routeMetric = ULONG_MAX;
+    // Delete the previous routing table entry, if any.
+    if (data->InterfaceLuid.Value != 0) {
+        DWORD result = DeleteIpForwardEntry2(data);
+        if ((result != NO_ERROR) && (result != ERROR_NOT_FOUND)) {
+            logger.error() << "Failed to delete route:" << result;
+            return false;
+        }
     }
 
-    // Prefer routes with lower metric if we find multiple matches
-    // with the same prefix length.
-    if ((row->DestinationPrefix.PrefixLength == bestMatch) &&
-        (routeMetric >= bestMetric)) {
-      continue;
+    // Update the routing table entry.
+    data->InterfaceLuid.Value = bestLuid;
+    memcpy(&data->NextHop, &nexthop, sizeof(SOCKADDR_INET));
+    if (data->InterfaceLuid.Value != 0) {
+        DWORD result = CreateIpForwardEntry2(data);
+        if (result != NO_ERROR) {
+            data->InterfaceLuid.Value = 0;
+            data->InterfaceIndex = 0;
+            if (result != ERROR_OBJECT_ALREADY_EXISTS) {
+                logger.error() << "Failed to update route:" << result;
+                return false;
+            }
+        }
     }
-
-    // If we got here, then this is the longest prefix match so far.
-    memcpy(&nexthop, &row->NextHop, sizeof(SOCKADDR_INET));
-    bestMatch = row->DestinationPrefix.PrefixLength;
-    bestMetric = routeMetric;
-    if (bestMatch == data->DestinationPrefix.PrefixLength) {
-      bestLuid = 0;  // Don't write to the table if we find an exact match.
-    } else {
-      bestLuid = row->InterfaceLuid.Value;
-    }
-  }
-
-  // If neither the interface nor next-hop have changed, then do nothing.
-  if (data->InterfaceLuid.Value == bestLuid &&
-      memcmp(&nexthop, &data->NextHop, sizeof(SOCKADDR_INET)) == 0) {
-    return;
-  }
-
-  // Delete the previous routing table entry, if any.
-  if (data->InterfaceLuid.Value != 0) {
-    DWORD result = DeleteIpForwardEntry2(data);
-    if ((result != NO_ERROR) && (result != ERROR_NOT_FOUND)) {
-      logger.error() << "Failed to delete route:" << result;
-    }
-  }
-
-  // Update the routing table entry.
-  data->InterfaceLuid.Value = bestLuid;
-  memcpy(&data->NextHop, &nexthop, sizeof(SOCKADDR_INET));
-  if (data->InterfaceLuid.Value != 0) {
-    DWORD result = CreateIpForwardEntry2(data);
-    if (result != NO_ERROR) {
-      logger.error() << "Failed to update route:" << result;
-    }
-  }
+    return bestMatch >= 0;
 }
 
 // static
@@ -370,9 +379,8 @@ bool WindowsRouteMonitor::addExclusionRoute(const IPAddress& prefix) {
 
   // Silently ignore non-routeable addresses.
   QHostAddress addr = prefix.address();
-  if (addr.isLoopback() || addr.isBroadcast() || addr.isLinkLocal() ||
-      addr.isMulticast()) {
-    return true;
+  if (addr.isNull() || addr.isLoopback() || addr.isBroadcast() || addr.isLinkLocal() || addr.isMulticast()) {
+      return true;
   }
 
   if (m_exclusionRoutes.contains(prefix)) {
@@ -425,11 +433,11 @@ bool WindowsRouteMonitor::addExclusionRoute(const IPAddress& prefix) {
   }
   updateInterfaceMetrics(family);
   updateCapturedRoutes(family, table);
-  updateExclusionRoute(data, table);
+  const bool routeReady = updateExclusionRoute(data, table);
   FreeMibTable(table);
 
   m_exclusionRoutes[prefix] = data;
-  return true;
+  return routeReady;
 }
 
 bool WindowsRouteMonitor::deleteExclusionRoute(const IPAddress& prefix) {
@@ -441,7 +449,7 @@ bool WindowsRouteMonitor::deleteExclusionRoute(const IPAddress& prefix) {
     return true;
   }
 
-  DWORD result = DeleteIpForwardEntry2(data);
+  DWORD result = data->InterfaceLuid.Value == 0 ? NO_ERROR : DeleteIpForwardEntry2(data);
   if ((result != ERROR_NOT_FOUND) && (result != NO_ERROR)) {
     logger.error() << "Failed to delete route to"
                    << prefix.toString()
@@ -459,7 +467,7 @@ void WindowsRouteMonitor::flushRouteTable(
     QHash<IPAddress, MIB_IPFORWARD_ROW2*>& table) {
   for (auto i = table.begin(); i != table.end(); i++) {
     MIB_IPFORWARD_ROW2* data = i.value();
-    DWORD result = DeleteIpForwardEntry2(data);
+    DWORD result = data->InterfaceLuid.Value == 0 ? NO_ERROR : DeleteIpForwardEntry2(data);
     if ((result != ERROR_NOT_FOUND) && (result != NO_ERROR)) {
       logger.error() << "Failed to delete route to"
                      << i.key().toString()
