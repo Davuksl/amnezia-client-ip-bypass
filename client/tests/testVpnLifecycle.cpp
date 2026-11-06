@@ -135,6 +135,48 @@ private slots:
         QVERIFY(!ipc->source.calls.contains("createProcess"));
     }
 
+    void reachableServerBypassesUnderlayWithStrictKillSwitch()
+    {
+        QTcpServer entry;
+        QVERIFY(entry.listen(QHostAddress::LocalHost));
+        QJsonObject config = xrayConfig();
+        QJsonObject native =
+                QJsonDocument::fromJson(config.value("xray_config_data").toObject().value("config").toString().toUtf8())
+                        .object();
+        const QJsonObject server { { "address", "127.0.0.1" }, { "port", entry.serverPort() } };
+        const QJsonObject settings { { "vnext", QJsonArray { server } } };
+        const QJsonObject outbound { { "protocol", "vless" }, { "settings", settings } };
+        native.insert("outbounds", QJsonArray { outbound });
+        config.insert("hostName", "127.0.0.1");
+        config.insert("forceWarpAvailable", true);
+        QJsonObject wrapper = config.value("xray_config_data").toObject();
+        wrapper.insert("config", QString::fromUtf8(QJsonDocument(native).toJson()));
+        config.insert("xray_config_data", wrapper);
+
+        VpnConnection connection(servers.get(), appSettings.get());
+        connection.connectToVpn(QStringLiteral("test"), DockerContainer::Xray, config);
+        QVERIFY(!connection.m_useWarpUnderlay);
+        QVERIFY(!connection.m_underlayProtocol);
+        QVERIFY(ipc->source.calls.contains("allowRange"));
+        QVERIFY(!connection.m_directServerAllowedRange.isEmpty());
+        QVERIFY(connection.clearDirectServerAllowedRange());
+        QVERIFY(ipc->source.calls.contains("removeRange"));
+        connection.disconnectFromVpn();
+    }
+
+    void disabledIpBlockBypassSkipsUnderlay()
+    {
+        appSettings->setIpBlockBypassEnabled(false);
+        QJsonObject config = xrayConfig();
+        config.insert("forceWarpAvailable", true);
+        VpnConnection connection(servers.get(), appSettings.get());
+        connection.connectToVpn(QStringLiteral("test"), DockerContainer::Xray, config);
+        QVERIFY(!connection.m_useWarpUnderlay);
+        QVERIFY(!connection.m_underlayProtocol);
+        QVERIFY(ipc->source.calls.contains("allowRange"));
+        connection.disconnectFromVpn();
+    }
+
     void waitsForBothCleanupAcknowledgments()
     {
         VpnConnection connection(servers.get(), appSettings.get());
@@ -222,9 +264,9 @@ private slots:
         attachMain(connection, main, false);
         attachUnderlay(connection, firstUnderlay);
         connection.m_useWarpUnderlay = true;
-        connection.m_underlayConfiguration = { { "awg_config_data", QJsonObject { { "port", 500 } } } };
+        connection.m_underlayConfiguration = { { "awg_config_data", QJsonObject { { "port", 2408 } } } };
         connection.retryWarpUnderlay(ErrorCode::ApiConfigTimeoutError, 60000);
-        QCOMPARE(connection.m_underlayConfiguration.value("awg_config_data").toObject().value("port").toInt(), 2408);
+        QCOMPARE(connection.m_underlayConfiguration.value("awg_config_data").toObject().value("port").toInt(), 500);
         QCOMPARE(main->starts, 0);
         QCOMPARE(firstUnderlay->stops, 1);
         QCOMPARE(connection.m_underlayProtocol.data(), firstUnderlay.data());
@@ -296,6 +338,28 @@ private slots:
         QVERIFY(recoveredCredentials.username == proxy.userName());
         QVERIFY(recoveredCredentials.password == proxy.password());
         QVERIFY(ipc->process.arguments == processArguments);
+    }
+
+    void nonXrayUnderlayFailureStopsBothProtocols()
+    {
+        VpnConnection connection(servers.get(), appSettings.get());
+        auto main = QSharedPointer<AcknowledgedProtocol>::create();
+        auto underlay = QSharedPointer<AcknowledgedProtocol>::create();
+        main->setConnectionState(Vpn::Connected);
+        underlay->setConnectionState(Vpn::Connected);
+        attachMain(connection, main);
+        attachUnderlay(connection, underlay);
+        connection.m_container = DockerContainer::OpenVpn;
+        connection.m_useWarpUnderlay = true;
+        connection.m_connectionState = Vpn::Connected;
+        connection.retryWarpUnderlay(ErrorCode::AmneziaServiceConnectionFailed);
+        QCOMPARE(connection.connectionState(), Vpn::Disconnecting);
+        QCOMPARE(main->stops, 1);
+        QCOMPARE(underlay->stops, 0);
+        main->setConnectionState(Vpn::Disconnected);
+        QCOMPARE(underlay->stops, 1);
+        underlay->setConnectionState(Vpn::Disconnected);
+        QCOMPARE(connection.connectionState(), Vpn::Error);
     }
 
     void cancelsLateNativeStartWithoutStartingTun()

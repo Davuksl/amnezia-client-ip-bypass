@@ -25,8 +25,10 @@ namespace {
 Logger logger("DaemonLocalServer");
 }  // namespace
 
-DaemonLocalServer::DaemonLocalServer(QObject* parent) : QObject(parent) {
-  MZ_COUNT_CTOR(DaemonLocalServer);
+DaemonLocalServer::DaemonLocalServer(QObject *parent, Daemon *daemon, const QString &path)
+    : QObject(parent), m_daemon(daemon), m_path(path)
+{
+    MZ_COUNT_CTOR(DaemonLocalServer);
 }
 
 DaemonLocalServer::~DaemonLocalServer() { MZ_COUNT_DTOR(DaemonLocalServer); }
@@ -56,8 +58,7 @@ bool DaemonLocalServer::initialize() {
     QLocalSocket* socket = m_server.nextPendingConnection();
     Q_ASSERT(socket);
 
-    DaemonLocalServerConnection* connection =
-        new DaemonLocalServerConnection(&m_server, socket);
+    DaemonLocalServerConnection *connection = new DaemonLocalServerConnection(&m_server, socket, m_daemon);
     connect(socket, &QLocalSocket::disconnected, connection,
             &DaemonLocalServerConnection::deleteLater);
   });
@@ -66,6 +67,9 @@ bool DaemonLocalServer::initialize() {
 }
 
 QString DaemonLocalServer::daemonPath() const {
+    if (!m_path.isEmpty()) {
+        return m_path;
+    }
 #if defined(MZ_WINDOWS)
   return "\\\\.\\pipe\\amneziavpn";
 #endif

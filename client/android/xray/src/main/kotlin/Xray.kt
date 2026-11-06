@@ -86,15 +86,26 @@ class Xray : Protocol() {
         ensureInboundAuth(xrayJsonConfig)
         val xrayConfig = parseConfig(config, xrayJsonConfig)
 
-        var xrayJsonConfigString = xrayJsonConfig.toString()
-        config.getString("hostName").let { hostName ->
-            val ipAddress = parseInetAddress(hostName).ip
-            if (hostName != ipAddress) {
-                xrayJsonConfigString = xrayJsonConfigString.replace(hostName, ipAddress)
+        if (!config.has("warpUnderlay")) {
+            config.getString("hostName").let { hostName ->
+                val ipAddress = parseInetAddress(hostName).ip
+                val outbounds = xrayJsonConfig.optJSONArray("outbounds")
+                for (index in 0 until (outbounds?.length() ?: 0)) {
+                    val settings = outbounds?.optJSONObject(index)?.optJSONObject("settings") ?: continue
+                    for (key in listOf("vnext", "servers")) {
+                        val servers = settings.optJSONArray(key) ?: continue
+                        for (serverIndex in 0 until servers.length()) {
+                            val server = servers.optJSONObject(serverIndex) ?: continue
+                            if (server.optString("address").equals(hostName, ignoreCase = true)) {
+                                server.put("address", ipAddress)
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        start(xrayConfig, xrayJsonConfigString, vpnBuilder, protect)
+        start(xrayConfig, xrayJsonConfig.toString(), vpnBuilder, protect)
         state.value = CONNECTED
         isRunning = true
     }
@@ -113,8 +124,10 @@ class Xray : Protocol() {
 
             addRoute(InetNetwork("0.0.0.0", 0))
             addRoute(InetNetwork("2000::0", 3))
-            config.getString("hostName").let {
-                excludeRoute(InetNetwork(it, 32))
+            if (!config.has("warpUnderlay")) {
+                config.getString("hostName").let {
+                    excludeRoute(InetNetwork(it, 32))
+                }
             }
 
             config.optString("mtu").let {
@@ -219,6 +232,7 @@ class Xray : Protocol() {
         if (socksIdx < 0) return
 
         val inbound = inbounds.getJSONObject(socksIdx)
+        inbound.put("listen", "127.0.0.1")
         inbound.put("port", acquireFreeLocalPort())
         val settings = inbound.optJSONObject("settings") ?: JSONObject().also { inbound.put("settings", it) }
         val accounts = settings.optJSONArray("accounts")

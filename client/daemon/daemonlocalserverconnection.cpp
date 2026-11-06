@@ -17,26 +17,23 @@ namespace {
 Logger logger("DaemonLocalServerConnection");
 }
 
-DaemonLocalServerConnection::DaemonLocalServerConnection(QObject* parent,
-                                                         QLocalSocket* socket)
-    : QObject(parent) {
-  MZ_COUNT_CTOR(DaemonLocalServerConnection);
+DaemonLocalServerConnection::DaemonLocalServerConnection(QObject *parent, QLocalSocket *socket, Daemon *daemon)
+    : QObject(parent)
+{
+    MZ_COUNT_CTOR(DaemonLocalServerConnection);
 
-  logger.debug() << "Connection created";
+    logger.debug() << "Connection created";
 
-  Q_ASSERT(socket);
-  m_socket = socket;
+    Q_ASSERT(socket);
+    m_socket = socket;
 
-  connect(m_socket, &QLocalSocket::readyRead, this,
-          &DaemonLocalServerConnection::readData);
+    connect(m_socket, &QLocalSocket::readyRead, this, &DaemonLocalServerConnection::readData);
 
-  Daemon* daemon = Daemon::instance();
-  connect(daemon, &Daemon::connected, this,
-          &DaemonLocalServerConnection::connected);
-  connect(daemon, &Daemon::disconnected, this,
-          &DaemonLocalServerConnection::disconnected);
-  connect(daemon, &Daemon::backendFailure, this,
-          &DaemonLocalServerConnection::backendFailure);
+    m_daemon = daemon ? daemon : Daemon::instance();
+    Q_ASSERT(m_daemon);
+    connect(m_daemon, &Daemon::connected, this, &DaemonLocalServerConnection::connected);
+    connect(m_daemon, &Daemon::disconnected, this, &DaemonLocalServerConnection::disconnected);
+    connect(m_daemon, &Daemon::backendFailure, this, &DaemonLocalServerConnection::backendFailure);
 }
 
 DaemonLocalServerConnection::~DaemonLocalServerConnection() {
@@ -111,42 +108,42 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
       return;
     }
 
-    if (!Daemon::instance()->activate(config)) {
-      logger.error() << "Failed to activate the interface";
-      if (Daemon::instance()->deactivate(false)) {
-          disconnected();
-      } else {
-          backendFailure(DaemonError::ERROR_FATAL);
-      }
+    if (!m_daemon->activate(config)) {
+        logger.error() << "Failed to activate the interface";
+        if (m_daemon->deactivate(false)) {
+            disconnected();
+        } else {
+            backendFailure(DaemonError::ERROR_FATAL);
+        }
     }
     return;
   }
 
   if (type == "deactivate") {
-      if (!Daemon::instance()->deactivate(true)) {
+      if (!m_daemon->deactivate(true)) {
           backendFailure(DaemonError::ERROR_FATAL);
       }
     return;
   }
 
   if (type == "status") {
-    QJsonObject obj = Daemon::instance()->getStatus();
-    obj.insert("type", "status");
-    write(obj);
-    return;
+      QJsonObject obj = m_daemon->getStatus();
+      obj.insert("type", "status");
+      write(obj);
+      return;
   }
 
   if (type == "logs") {
     QJsonObject obj;
     obj.insert("type", "logs");
-    obj.insert("logs", Daemon::instance()->logs().replace("\n", "|"));
+    obj.insert("logs", m_daemon->logs().replace("\n", "|"));
     write(obj);
     return;
   }
 
   if (type == "cleanlogs") {
-    Daemon::instance()->cleanLogs();
-    return;
+      m_daemon->cleanLogs();
+      return;
   }
 
   logger.warning() << "Invalid command:" << type;

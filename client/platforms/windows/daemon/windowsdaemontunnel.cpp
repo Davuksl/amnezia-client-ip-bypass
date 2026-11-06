@@ -7,6 +7,7 @@
 #include <Windows.h>
 
 #include <QCoreApplication>
+#include <QRegularExpression>
 
 //#include "commandlineparser.h"
 #include "core/utils/constants.h"
@@ -37,9 +38,9 @@ int WindowsDaemonTunnel::run(QStringList& tokens) {
   QCoreApplication::setApplicationName("Amnezia VPN Tunnel");
   QCoreApplication::setApplicationVersion(Constants::versionString());
 
-  if (tokens.length() != 2) {
-    logger.error() << "Expected 1 parameter only: the config file.";
-    return 1;
+  if (tokens.length() != 3) {
+      logger.error() << "Expected a config and an interface name.";
+      return 1;
   }
   QString maybeConfig = tokens.at(1);
 
@@ -64,7 +65,10 @@ int WindowsDaemonTunnel::run(QStringList& tokens) {
     WindowsUtils::windowsLog("Failed to get WireGuardTunnelService function");
     return 1;
   }
-  auto name = WireguardUtilsWindows::s_interfaceName();
+  const QString name = tokens.at(2);
+  if (name.isEmpty() || name.size() > 64 || name.contains(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]")))) {
+      return 1;
+  }
   if (!tunnelProc(maybeConfig.utf16(), name.utf16())) {
     logger.error() << "Failed to activate the tunnel service";
     return 1;

@@ -68,11 +68,13 @@ public:
 
     bool isStrictKillSwitchEnabled() const;
     void toggleStrictKillSwitch(bool enable);
+    bool isIpBlockBypassEnabled() const;
+    void toggleIpBlockBypass(bool enable);
 
     QString getInstallationUuid(bool createIfNotExists = true) const;
 
     void enableDevMode();
-    
+
     QString nextAvailableServerName() const;
     bool isDevModeEnabled() const;
 

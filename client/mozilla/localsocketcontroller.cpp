@@ -212,6 +212,11 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
   json.insert("serverPort", wgConfig.value(amnezia::configKey::port).toVariant().toInt());
   json.insert("serverIpv4Gateway", wgConfig.value(amnezia::configKey::hostName));
   //  json.insert("serverIpv6Gateway", QJsonValue(hop.m_server.ipv6Gateway()));
+  if (rawConfig.contains(amnezia::configKey::underlayEndpoint)) {
+      json.insert(amnezia::configKey::underlayEndpoint, rawConfig.value(amnezia::configKey::underlayEndpoint));
+      json.insert(amnezia::configKey::underlayAddress, rawConfig.value(amnezia::configKey::underlayAddress));
+      json.insert(amnezia::configKey::underlayServerAddress, rawConfig.value(amnezia::configKey::underlayServerAddress));
+  }
 
   if (wgConfig.contains(amnezia::configKey::persistentKeepAlive)) {
     json.insert("persistentKeepalive",
@@ -289,7 +294,9 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
   json.insert("allowedIPAddressRanges", jsAllowedIPAddesses);
 
   QJsonArray jsExcludedAddresses;
-  jsExcludedAddresses.append(wgConfig.value(amnezia::configKey::hostName));
+  if (rawConfig.value(QStringLiteral("hopType")).toString() != QStringLiteral("MultiHopExit")) {
+      jsExcludedAddresses.append(wgConfig.value(amnezia::configKey::hostName));
+  }
   if (splitTunnelType == 2) {
     for (auto v : splitTunnelSites) {
           QString ipRange = v.toString();

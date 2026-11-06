@@ -4300,6 +4300,16 @@ Buat satu dari pengaturan saat ini.</translation>
         <source>Blocks network connections without VPN</source>
         <translation>Memblokir koneksi jaringan tanpa VPN</translation>
     </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="95"/>
+        <source>Bypass VPN server IP blocking through WARP</source>
+        <translation>Lewati pemblokiran IP server VPN melalui WARP</translation>
+    </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="96"/>
+        <source>Route any supported VPN protocol through WARP when the server IP is blocked</source>
+        <translation>Rutekan semua protokol VPN yang didukung melalui WARP saat IP server diblokir</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsDns</name>

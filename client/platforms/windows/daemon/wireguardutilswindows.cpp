@@ -22,25 +22,26 @@ namespace {
 Logger logger("WireguardUtilsWindows");
 };  // namespace
 
-std::unique_ptr<WireguardUtilsWindows> WireguardUtilsWindows::create(
-    WindowsFirewall* fw, QObject* parent) {
-  if (!fw) {
-    logger.error() << "WireguardUtilsWindows::create: no wfp handle";
-    return {};
-  }
+std::unique_ptr<WireguardUtilsWindows> WireguardUtilsWindows::create(WindowsFirewall *fw, QObject *parent,
+                                                                     const QString &interfaceName)
+{
+    if (!fw) {
+        logger.error() << "WireguardUtilsWindows::create: no wfp handle";
+        return { };
+    }
 
-  // Can't use make_unique here as the Constructor is private :(
-  auto utils = new WireguardUtilsWindows(parent, fw);
-  return std::unique_ptr<WireguardUtilsWindows>(utils);
+    // Can't use make_unique here as the Constructor is private :(
+    auto utils = new WireguardUtilsWindows(parent, fw, interfaceName);
+    return std::unique_ptr<WireguardUtilsWindows>(utils);
 }
 
-WireguardUtilsWindows::WireguardUtilsWindows(QObject* parent, WindowsFirewall* fw)
-    : WireguardUtils(parent), m_tunnel(this), m_firewall(fw) {
-  MZ_COUNT_CTOR(WireguardUtilsWindows);
-  logger.debug() << "WireguardUtilsWindows created.";
+WireguardUtilsWindows::WireguardUtilsWindows(QObject *parent, WindowsFirewall *fw, const QString &interfaceName)
+    : WireguardUtils(parent), m_interfaceName(interfaceName), m_tunnel(interfaceName, this), m_firewall(fw)
+{
+    MZ_COUNT_CTOR(WireguardUtilsWindows);
+    logger.debug() << "WireguardUtilsWindows created.";
 
-  connect(&m_tunnel, &WindowsTunnelService::backendFailure, this,
-          [&] { emit backendFailure(); });
+    connect(&m_tunnel, &WindowsTunnelService::backendFailure, this, [&] { emit backendFailure(); });
 }
 
 WireguardUtilsWindows::~WireguardUtilsWindows() {
@@ -178,7 +179,8 @@ bool WireguardUtilsWindows::updatePeer(const InterfaceConfig& config) {
 
   if (m_managesFirewall && config.m_killSwitchEnabled) {
       // Enable the windows firewall for this peer.
-      m_firewall->enablePeerTraffic(config);
+      m_firewall->enablePeerTraffic(config, QHostAddress(config.m_underlayAddress),
+                                    QHostAddress(config.m_underlayServerAddress));
   }
   logger.debug() << "Configuring peer" << publicKey.toHex()
                  << "via" << config.m_serverIpv4AddrIn;

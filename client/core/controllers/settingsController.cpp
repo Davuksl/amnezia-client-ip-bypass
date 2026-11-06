@@ -285,6 +285,16 @@ void SettingsController::toggleStrictKillSwitch(bool enable)
     m_appSettingsRepository->setStrictKillSwitchEnabled(enable);
 }
 
+bool SettingsController::isIpBlockBypassEnabled() const
+{
+    return m_appSettingsRepository->isIpBlockBypassEnabled();
+}
+
+void SettingsController::toggleIpBlockBypass(bool enable)
+{
+    m_appSettingsRepository->setIpBlockBypassEnabled(enable);
+}
+
 QString SettingsController::getInstallationUuid(bool createIfNotExists) const
 {
     return m_appSettingsRepository->getInstallationUuid(createIfNotExists);

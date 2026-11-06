@@ -10,13 +10,14 @@
 #include "daemonerrors.h"
 
 class QLocalSocket;
+class Daemon;
 
 class DaemonLocalServerConnection final : public QObject {
   Q_DISABLE_COPY_MOVE(DaemonLocalServerConnection)
 
  public:
-  DaemonLocalServerConnection(QObject* parent, QLocalSocket* socket);
-  ~DaemonLocalServerConnection();
+     DaemonLocalServerConnection(QObject *parent, QLocalSocket *socket, Daemon *daemon = nullptr);
+     ~DaemonLocalServerConnection();
 
  private:
   void readData();
@@ -31,6 +32,7 @@ class DaemonLocalServerConnection final : public QObject {
 
  private:
   QLocalSocket* m_socket = nullptr;
+  Daemon *m_daemon = nullptr;
 
   QByteArray m_buffer;
 };

@@ -174,6 +174,9 @@ void Ikev2Protocol::newConnectionStateEventReceived(UINT unMsg, tagRASCONNSTATE 
 void Ikev2Protocol::readIkev2Configuration(const QJsonObject &configuration)
 {
     m_config = configuration.value(ProtocolUtils::key_proto_config_data(Proto::Ikev2)).toObject();
+    if (configuration.contains(configKey::underlayEndpoint)) {
+        m_config.insert(configKey::hostName, configuration.value(configKey::underlayServerAddress));
+    }
 }
 
 ErrorCode Ikev2Protocol::start()
@@ -181,7 +184,7 @@ ErrorCode Ikev2Protocol::start()
     QByteArray cert = QByteArray::fromBase64(m_config[configKey::cert].toString().toUtf8());
     setConnectionState(Vpn::ConnectionState::Connecting);
 
-    QTemporaryFile * certFile = new QTemporaryFile;
+    QTemporaryFile *certFile = new QTemporaryFile;
     certFile->setAutoRemove(false);
     certFile->open();
     QString m_filename = certFile->fileName();

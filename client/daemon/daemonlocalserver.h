@@ -7,20 +7,24 @@
 
 #include <QLocalServer>
 
+class Daemon;
+
 class DaemonLocalServer final : public QObject {
   Q_DISABLE_COPY_MOVE(DaemonLocalServer)
 
  public:
-  explicit DaemonLocalServer(QObject* parent);
-  ~DaemonLocalServer();
+     explicit DaemonLocalServer(QObject *parent, Daemon *daemon = nullptr, const QString &path = { });
+     ~DaemonLocalServer();
 
-  bool initialize();
+     bool initialize();
 
  private:
   QString daemonPath() const;
 
  private:
   QLocalServer m_server;
+  Daemon *m_daemon = nullptr;
+  QString m_path;
 };
 
 #endif  // DAEMONLOCALSERVER_H

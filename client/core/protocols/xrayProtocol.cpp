@@ -10,10 +10,6 @@
 #include "core/utils/warpUnderlay.h"
 #include "ipc.h"
 
-#ifdef Q_OS_WIN
-    #include "platforms/windows/daemon/wireguardutilswindows.h"
-#endif
-
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -101,7 +97,7 @@ ErrorCode XrayProtocol::startTransport()
 #ifdef Q_OS_WIN
     if (m_rawConfig.contains(configKey::underlayEndpoint)) {
         const QString sourceAddress = m_rawConfig.value(configKey::underlayAddress).toString();
-        const QString interfaceName = WireguardUtilsWindows::s_interfaceName();
+        const QString interfaceName = m_rawConfig.value(configKey::underlayInterface).toString();
         bool underlayAvailable = false;
         for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
             if (networkInterface.humanReadableName() != interfaceName

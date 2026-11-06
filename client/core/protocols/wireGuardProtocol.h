@@ -16,7 +16,8 @@ class WireguardProtocol : public VpnProtocol
     Q_OBJECT
 
 public:
-    explicit WireguardProtocol(const QJsonObject& configuration, QObject* parent = nullptr);
+    explicit WireguardProtocol(const QJsonObject &configuration, QObject *parent = nullptr);
+    WireguardProtocol(const QJsonObject &configuration, const QString &socketPath, QObject *parent = nullptr);
     virtual ~WireguardProtocol() override;
 
     ErrorCode start() override;
@@ -26,7 +27,6 @@ public:
     ErrorCode stopMzImpl();
 
 private:
-
     QScopedPointer<ControllerImpl> m_impl;
 };
 

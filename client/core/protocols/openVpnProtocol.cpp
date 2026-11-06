@@ -6,11 +6,12 @@
 #include <QTcpSocket>
 #include <QNetworkInterface>
 
+#include "core/protocols/protocolUtils.h"
 #include "core/utils/networkUtilities.h"
+#include "core/utils/utilities.h"
+#include "core/utils/warpUnderlay.h"
 #include "ipc.h"
 #include "openVpnProtocol.h"
-#include "core/utils/utilities.h"
-#include "core/protocols/protocolUtils.h"
 #include "version.h"
 
 OpenVpnProtocol::OpenVpnProtocol(const QJsonObject &configuration, QObject *parent) : VpnProtocol(configuration, parent)
@@ -117,9 +118,15 @@ void OpenVpnProtocol::readOpenVpnConfiguration(const QJsonObject &configuration)
     if (configuration.contains(ProtocolUtils::key_proto_config_data(Proto::OpenVpn))) {
         m_configData = configuration;
         QJsonObject jConfig = configuration.value(ProtocolUtils::key_proto_config_data(Proto::OpenVpn)).toObject();
+        QString config = jConfig.value(configKey::config).toString();
+        if (configuration.contains(configKey::underlayEndpoint)) {
+            config = WarpUnderlay::bindOpenVpnConfig(config,
+                                                     configuration.value(configKey::underlayServerAddress).toString(),
+                                                     configuration.value(configKey::underlayAddress).toString());
+        }
 
         m_configFile.open();
-        m_configFile.write(jConfig.value(configKey::config).toString().toUtf8());
+        m_configFile.write(config.toUtf8());
         m_configFile.close();
         m_configFileName = m_configFile.fileName();
         qDebug().noquote() << QString("Set config data") << m_configFileName;

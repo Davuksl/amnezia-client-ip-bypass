@@ -15,10 +15,6 @@
 #include "platforms/windows/windowsutils.h"
 #include "windowsdaemon.h"
 
-#define TUNNEL_NAMED_PIPE \
-  "\\\\."                 \
-  "\\pipe\\ProtectedPrefix\\Administrators\\AmneziaWG\\AmneziaVPN"
-
 constexpr uint32_t WINDOWS_TUNNEL_MONITOR_TIMEOUT_MSEC = 2000;
 
 namespace {
@@ -28,23 +24,26 @@ Logger logger("WindowsTunnelService");
 static bool stopAndDeleteTunnelService(SC_HANDLE service);
 static bool waitForServiceStatus(SC_HANDLE service, DWORD expectedStatus);
 
-WindowsTunnelService::WindowsTunnelService(QObject* parent) : QObject(parent) {
-  MZ_COUNT_CTOR(WindowsTunnelService);
-  logger.debug() << "WindowsTunnelService created.";
+WindowsTunnelService::WindowsTunnelService(const QString &interfaceName, QObject *parent)
+    : QObject(parent), m_interfaceName(interfaceName), m_serviceName(QStringLiteral("AmneziaWGTunnel$") + interfaceName)
+{
+    MZ_COUNT_CTOR(WindowsTunnelService);
+    logger.debug() << "WindowsTunnelService created.";
 
-  m_scm = OpenSCManager(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
-  if (m_scm == nullptr) {
-    WindowsUtils::windowsLog("Failed to open SCManager");
-  }
+    m_scm = OpenSCManager(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+    if (m_scm == nullptr) {
+        WindowsUtils::windowsLog("Failed to open SCManager");
+    }
 
-  // Is the service already running? Terminate it.
-  m_service = OpenService((SC_HANDLE)m_scm, TUNNEL_SERVICE_NAME, SERVICE_ALL_ACCESS);
-  if (m_service != nullptr) {
-      logger.info() << "Tunnel already exists. Terminating it.";
-      stop();
-  }
+    // Is the service already running? Terminate it.
+    m_service =
+            OpenService((SC_HANDLE)m_scm, reinterpret_cast<const wchar_t *>(m_serviceName.utf16()), SERVICE_ALL_ACCESS);
+    if (m_service != nullptr) {
+        logger.info() << "Tunnel already exists. Terminating it.";
+        stop();
+    }
 
-  connect(&m_timer, &QTimer::timeout, this, &WindowsTunnelService::timeout);
+    connect(&m_timer, &QTimer::timeout, this, &WindowsTunnelService::timeout);
 }
 
 WindowsTunnelService::~WindowsTunnelService() {
@@ -114,7 +113,7 @@ bool WindowsTunnelService::start(const QString& configData) {
       return false;
   }
   SC_HANDLE scm = (SC_HANDLE)m_scm;
-  m_service = OpenService(scm, TUNNEL_SERVICE_NAME, SERVICE_ALL_ACCESS);
+  m_service = OpenService(scm, reinterpret_cast<const wchar_t *>(m_serviceName.utf16()), SERVICE_ALL_ACCESS);
   if (m_service && !stop()) {
       return false;
   }
@@ -129,14 +128,15 @@ bool WindowsTunnelService::start(const QString& configData) {
   QString serviceCmdline;
   {
     QTextStream out(&serviceCmdline);
-    out << "\"" << qApp->applicationFilePath() << "\" tunneldaemon \""
-        << configData << "\"";
+    out << "\"" << qApp->applicationFilePath() << "\" tunneldaemon \"" << configData << "\" \"" << m_interfaceName
+        << "\"";
   }
 
   logger.debug() << "Service:" << qApp->applicationFilePath();
 
   SC_HANDLE service =
-          CreateService(scm, TUNNEL_SERVICE_NAME, L"Amnezia VPN (tunnel)", SERVICE_ALL_ACCESS,
+          CreateService(scm, reinterpret_cast<const wchar_t *>(m_serviceName.utf16()),
+                        reinterpret_cast<const wchar_t *>(m_serviceName.utf16()), SERVICE_ALL_ACCESS,
                         SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
                         (const wchar_t *)serviceCmdline.utf16(), nullptr, 0, TEXT("Nsi\0TcpIp\0"), nullptr, nullptr);
   if (!service) {
@@ -222,17 +222,18 @@ static bool stopAndDeleteTunnelService(SC_HANDLE service) {
 
 QString WindowsTunnelService::uapiCommand(const QString& command) {
   // Create a pipe to the tunnel service.
-  LPTSTR tunnelName = (LPTSTR)TEXT(TUNNEL_NAMED_PIPE);
-  HANDLE pipe = CreateFile(tunnelName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                           OPEN_EXISTING, 0, nullptr);
+  const QString tunnelName =
+          QStringLiteral("\\\\.\\pipe\\ProtectedPrefix\\Administrators\\AmneziaWG\\") + m_interfaceName;
+  HANDLE pipe = CreateFile(reinterpret_cast<const wchar_t *>(tunnelName.utf16()), GENERIC_READ | GENERIC_WRITE, 0,
+                           nullptr, OPEN_EXISTING, 0, nullptr);
   if (pipe == INVALID_HANDLE_VALUE) {
     return QString();
   }
 
   auto guard = qScopeGuard([&] { CloseHandle(pipe); });
-  if (!WaitNamedPipe(tunnelName, 1000)) {
-    WindowsUtils::windowsLog("Failed to wait for named pipes");
-    return QString();
+  if (!WaitNamedPipe(reinterpret_cast<const wchar_t *>(tunnelName.utf16()), 1000)) {
+      WindowsUtils::windowsLog("Failed to wait for named pipes");
+      return QString();
   }
 
   DWORD mode = PIPE_READMODE_BYTE;

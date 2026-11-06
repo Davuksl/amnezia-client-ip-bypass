@@ -3,6 +3,7 @@ package org.amnezia.vpn.protocol.openvpn
 import android.net.VpnService.Builder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.openvpn.ovpn3.ClientAPI_Config
@@ -19,7 +20,8 @@ import org.json.JSONObject
 
 open class OpenVpn : Protocol() {
 
-    private var openVpnClient: OpenVpnClient? = null
+    @Volatile private var openVpnClient: OpenVpnClient? = null
+    @Volatile private var connectionJob: Job? = null
     private lateinit var scope: CoroutineScope
 
     override val statistics: Statistics
@@ -46,6 +48,7 @@ open class OpenVpn : Protocol() {
     }
 
     override suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        connectionJob?.join()
         val configBuilder = OpenVpnConfig.Builder()
 
         openVpnClient = OpenVpnClient(
@@ -66,19 +69,29 @@ open class OpenVpn : Protocol() {
                 }
 
                 // exclude remote server ip from vpn routes
-                val remoteServer = config.getString("hostName")
-                val remoteServerAddress = InetNetwork(parseInetAddress(remoteServer))
-                configBuilder.excludeRoute(remoteServerAddress)
+                if (!config.has("warpUnderlay")) {
+                    val remoteServer = config.getString("hostName")
+                    val remoteServerAddress = InetNetwork(parseInetAddress(remoteServer))
+                    configBuilder.excludeRoute(remoteServerAddress)
+                }
 
                 configPluggableTransport(configBuilder, config)
                 configBuilder.configSplitTunneling(config)
                 configBuilder.configAppSplitTunneling(config)
 
-                scope.launch {
+                val job = scope.launch {
                     val status = client.connect()
                     if (status.error) {
                         state.value = DISCONNECTED
                         onError("OpenVpn connect() error: ${status.status}: ${status.message}")
+                    }
+                }
+                connectionJob = job
+                job.invokeOnCompletion {
+                    if (openVpnClient === client) {
+                        openVpnClient = null
+                        connectionJob = null
+                        state.value = DISCONNECTED
                     }
                 }
             }
@@ -90,7 +103,11 @@ open class OpenVpn : Protocol() {
 
     override fun stopVpn() {
         openVpnClient?.stop()
-        openVpnClient = null
+        connectionJob?.cancel()
+        if (connectionJob == null) {
+            openVpnClient = null
+            state.value = DISCONNECTED
+        }
     }
 
     override fun reconnectVpn(vpnBuilder: Builder, protect: (Int) -> Boolean) {

@@ -4,6 +4,8 @@
 
 #include "daemon.h"
 
+#include "core/utils/constants/configKeys.h"
+
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -31,8 +33,9 @@ Daemon::Daemon(QObject* parent) : QObject(parent) {
 
   logger.debug() << "Daemon created";
 
-  Q_ASSERT(s_daemon == nullptr);
-  s_daemon = this;
+  if (s_daemon == nullptr) {
+      s_daemon = this;
+  }
 
   m_handshakeTimer.setSingleShot(true);
   connect(&m_handshakeTimer, &QTimer::timeout, this, &Daemon::checkHandshake);
@@ -43,8 +46,9 @@ Daemon::~Daemon() {
 
   logger.debug() << "Daemon released";
 
-  Q_ASSERT(s_daemon == this);
-  s_daemon = nullptr;
+  if (s_daemon == this) {
+      s_daemon = nullptr;
+  }
 }
 
 // static
@@ -289,6 +293,8 @@ bool Daemon::parseConfig(const QJsonObject& obj, InterfaceConfig& config) {
   }
   config.m_serverIpv4Gateway = obj.value("serverIpv4Gateway").toString();
   config.m_serverIpv6Gateway = obj.value("serverIpv6Gateway").toString();
+  config.m_underlayAddress = obj.value(amnezia::configKey::underlayAddress).toString();
+  config.m_underlayServerAddress = obj.value(amnezia::configKey::underlayServerAddress).toString();
 
   if (!obj.contains("primaryDnsServer")) {
     config.m_primaryDnsServer = QString();

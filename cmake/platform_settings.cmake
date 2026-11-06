@@ -17,8 +17,10 @@ if(APPLE)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set(APP_ANDROID_APPLICATION_ID "org.amnezia.vpn" CACHE STRING "Android application identifier")
     set(_CONAN_INSTALL_ARGS
-        "-c=tools.android:cmake_legacy_toolchain=false"
+        "-o=awg-android/*:application_id=${APP_ANDROID_APPLICATION_ID}"
+        "-c=tools.android:cmake_legacy_toolchain=False"
         "-c=tools.build:sharedlinkflags=['-Wl,-z,max-page-size=16384']"
         "-c=tools.build:exelinkflags=['-Wl,-z,max-page-size=16384']")
     set(CMAKE_ANDROID_STL_TYPE "c++_shared" CACHE STRING "")

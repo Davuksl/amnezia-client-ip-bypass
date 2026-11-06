@@ -22,6 +22,14 @@ namespace
             QStringLiteral("engage.example:2408"),
         };
     }
+
+    QJsonObject xrayServerConfig(const QString &key, const QString &address, quint16 port)
+    {
+        const QJsonObject server { { "address", address }, { "port", port } };
+        const QJsonObject settings { { key, QJsonArray { server } } };
+        const QJsonObject outbound { { "settings", settings } };
+        return { { "outbounds", QJsonArray { outbound } } };
+    }
 }
 
 class TestWarpUnderlay : public QObject
@@ -30,11 +38,15 @@ class TestWarpUnderlay : public QObject
 
 private slots:
     void serializesRegistration();
+    void supportsAllVpnProtocols();
     void createsRouteOnlyAwgConfig();
     void rejectsInvalidRegistration();
     void rejectsNonIpv4Endpoints();
     void rejectsInvalidInitPacket();
     void cancelsPendingRegistration();
+    void detectsDirectlyReachableXrayServer();
+    void rejectsUnreachableOrUnmatchedXrayServer();
+    void bindsOpenVpnTransport();
     void bindsProxyTransportAndPreservesTls();
     void rejectsUnmatchedXrayServer();
 };
@@ -51,6 +63,17 @@ void TestWarpUnderlay::serializesRegistration()
     QCOMPARE(actual->endpoint, expected.endpoint);
 }
 
+void TestWarpUnderlay::supportsAllVpnProtocols()
+{
+    for (DockerContainer container :
+         { DockerContainer::Xray, DockerContainer::SSXray, DockerContainer::OpenVpn, DockerContainer::WireGuard,
+           DockerContainer::Awg, DockerContainer::Awg2, DockerContainer::Ipsec }) {
+        QVERIFY(WarpUnderlay::supportsProtocol(container));
+    }
+    QVERIFY(!WarpUnderlay::supportsProtocol(DockerContainer::None));
+    QVERIFY(!WarpUnderlay::supportsProtocol(DockerContainer::Dns));
+}
+
 void TestWarpUnderlay::createsRouteOnlyAwgConfig()
 {
     const auto config = WarpUnderlay::createAwgConfig(underlay(), QStringLiteral("192.0.2.1"),
@@ -62,7 +85,7 @@ void TestWarpUnderlay::createsRouteOnlyAwgConfig()
 
     const QJsonObject awg = config->value(QStringLiteral("awg_config_data")).toObject();
     QCOMPARE(awg.value(QStringLiteral("hostName")).toString(), QStringLiteral("192.0.2.1"));
-    QCOMPARE(awg.value(QStringLiteral("port")).toInt(), 500);
+    QCOMPARE(awg.value(QStringLiteral("port")).toInt(), 2408);
     QCOMPARE(awg.value(QStringLiteral("allowed_ips")).toArray(), QJsonArray { QStringLiteral("198.51.100.10/32") });
     QCOMPARE(awg.value(QStringLiteral("I1")).toString(), QStringLiteral("<b 0x0102>"));
     QCOMPARE(awg.value(QStringLiteral("Jc")).toString(), QStringLiteral("120"));
@@ -116,6 +139,43 @@ void TestWarpUnderlay::cancelsPendingRegistration()
     QVERIFY(accepted);
     QVERIFY(elapsed.elapsed() < 1500);
     QVERIFY(!WarpUnderlay::registerDevice({ }, []() { return true; }).has_value());
+}
+
+void TestWarpUnderlay::detectsDirectlyReachableXrayServer()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+    const QJsonObject config =
+            xrayServerConfig(QStringLiteral("vnext"), QStringLiteral("entry.example"), server.serverPort());
+    QVERIFY(WarpUnderlay::isXrayServerReachableDirectly(config, QStringLiteral("entry.example"),
+                                                        QStringLiteral("127.0.0.1"), { }, 500));
+}
+
+void TestWarpUnderlay::rejectsUnreachableOrUnmatchedXrayServer()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+    const quint16 closedPort = server.serverPort();
+    server.close();
+    const QJsonObject config = xrayServerConfig(QStringLiteral("servers"), QStringLiteral("entry.example"), closedPort);
+    QVERIFY(!WarpUnderlay::isXrayServerReachableDirectly(config, QStringLiteral("entry.example"),
+                                                         QStringLiteral("127.0.0.1"), { }, 100));
+    QVERIFY(!WarpUnderlay::isXrayServerReachableDirectly(config, QStringLiteral("other.example"),
+                                                         QStringLiteral("127.0.0.1"), { }, 100));
+    QVERIFY(!WarpUnderlay::isXrayServerReachableDirectly(
+            config, QStringLiteral("entry.example"), QStringLiteral("127.0.0.1"), []() { return true; }, 100));
+}
+
+void TestWarpUnderlay::bindsOpenVpnTransport()
+{
+    const QString config =
+            QStringLiteral("client\nremote vpn.example 1194 udp\nredirect-gateway def1\nlocal 192.0.2.2\n");
+    const QString bound =
+            WarpUnderlay::bindOpenVpnConfig(config, QStringLiteral("198.51.100.10"), QStringLiteral("172.16.0.2"));
+    QVERIFY(bound.contains(QStringLiteral("remote 198.51.100.10 1194 udp")));
+    QVERIFY(bound.contains(QStringLiteral("redirect-gateway def1 local")));
+    QCOMPARE(bound.count(QStringLiteral("local 172.16.0.2")), 1);
+    QVERIFY(!bound.contains(QStringLiteral("local 192.0.2.2")));
 }
 
 void TestWarpUnderlay::bindsProxyTransportAndPreservesTls()

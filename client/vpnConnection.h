@@ -10,11 +10,12 @@
 #include <functional>
 
 #include "core/protocols/vpnProtocol.h"
+#include "core/repositories/secureAppSettingsRepository.h"
+#include "core/repositories/secureServersRepository.h"
+#include "core/utils/commonStructs.h"
 #include "core/utils/errorCodes.h"
 #include "core/utils/routeModes.h"
-#include "core/utils/commonStructs.h"
-#include "core/repositories/secureServersRepository.h"
-#include "core/repositories/secureAppSettingsRepository.h"
+#include "core/utils/warpUnderlay.h"
 
 #ifdef AMNEZIA_DESKTOP
 #include "core/utils/ipcClient.h"
@@ -85,6 +86,10 @@ private:
     QJsonObject m_underlayConfiguration;
     QJsonObject m_routeMode;
     QString m_remoteAddress;
+    QString m_directServerAllowedRange;
+    DockerContainer m_container = DockerContainer::None;
+    QString m_warpUnderlayInterfaceName = amnezia::warpUnderlayInterfaceName;
+    QString m_warpUnderlaySocketPath = amnezia::warpUnderlaySocketPath;
 
     // Only for iOS for now, check counters
     QTimer m_checkTimer;
@@ -125,6 +130,7 @@ private:
    void appendSplitTunnelingConfig();
    void appendKillSwitchConfig();
    bool prepareWarpUnderlay(quint64 generation);
+   bool clearDirectServerAllowedRange();
 };
 
 #endif // VPNCONNECTION_H

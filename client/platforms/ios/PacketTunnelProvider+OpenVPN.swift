@@ -16,11 +16,11 @@ extension PacketTunnelProvider {
         openVpnLocalAddress = nil
         openVpnLocalMask = nil
         lastOpenVPNSettings = nil
+        openVPNConnectionStarted = false
 
-        guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
-              let providerConfiguration = protocolConfiguration.providerConfiguration,
-              let openVPNConfigData = providerConfiguration[Constants.ovpnConfigKey] as? Data else {
+        guard let openVPNConfigData = protocolConfigurationData(for: Constants.ovpnConfigKey) else {
             ovpnLog(.error, message: "Can't start")
+            completionHandler(WarpTransportError.invalidConfiguration)
             return
         }
 
@@ -44,6 +44,7 @@ extension PacketTunnelProvider {
             setupAndlaunchOpenVPN(withConfig: ovpnConfiguration, completionHandler: completionHandler)
         } catch {
             ovpnLog(.error, message: "Can't parse OpenVPN config: \(error.localizedDescription)")
+            completionHandler(error)
             return
         }
     }
@@ -214,6 +215,7 @@ extension PacketTunnelProvider {
 #endif
 
         startHandler = completionHandler
+        openVPNConnectionStarted = true
         ovpnAdapter?.connect(using: openVPNPacketFlow())
     }
 
@@ -238,7 +240,6 @@ extension PacketTunnelProvider {
     func stopOpenVPN(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         ovpnLog(.info, message: "Stopping tunnel: reason: \(reason.amneziaDescription)")
 
-        stopHandler = completionHandler
         openVpnGatewayAddress = nil
         openVpnLocalAddress = nil
         openVpnLocalMask = nil
@@ -246,7 +247,17 @@ extension PacketTunnelProvider {
         if vpnReachability.isTracking {
             vpnReachability.stopTracking()
         }
-        ovpnAdapter?.disconnect()
+        let pendingStart = startHandler
+        startHandler = nil
+        pendingStart?(WarpTransportError.cancelled)
+        guard let adapter = ovpnAdapter, openVPNConnectionStarted else {
+            ovpnAdapter?.delegate = nil
+            ovpnAdapter = nil
+            completionHandler()
+            return
+        }
+        stopHandler = completionHandler
+        adapter.disconnect()
     }
 }
 
@@ -260,6 +271,22 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
     func openVPNAdapter(
         _ openVPNAdapter: OpenVPNAdapter,
         configureTunnelWithNetworkSettings networkSettings: NEPacketTunnelNetworkSettings?,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        DispatchQueue.main.async {
+            guard self.ovpnAdapter === openVPNAdapter,
+                  self.protoType == .openvpn || networkSettings == nil else {
+                completionHandler(WarpTransportError.cancelled)
+                return
+            }
+            self.configureOpenVPNTunnel(openVPNAdapter, networkSettings: networkSettings,
+                                        completionHandler: completionHandler)
+        }
+    }
+
+    private func configureOpenVPNTunnel(
+        _ openVPNAdapter: OpenVPNAdapter,
+        networkSettings: NEPacketTunnelNetworkSettings?,
         completionHandler: @escaping (Error?) -> Void
     ) {
         guard var effectiveSettings = networkSettings else {
@@ -818,53 +845,70 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
         _ openVPNAdapter: OpenVPNAdapter,
         handleEvent event: OpenVPNAdapterEvent,
         message: String?) {
+        DispatchQueue.main.async {
+            guard self.ovpnAdapter === openVPNAdapter else { return }
             switch event {
             case .connected:
-                if reasserting {
-                    reasserting = false
+                guard self.protoType == .openvpn else { return }
+                if self.reasserting {
+                    self.reasserting = false
                 }
 
-                guard let startHandler = startHandler else { return }
+                guard let startHandler = self.startHandler else { return }
 
-                startHandler(nil)
                 self.startHandler = nil
+                startHandler(nil)
 
-                logOpenVPNConnectionInfo()
-                refreshOpenVPNSettingsAfterConnect()
+                self.logOpenVPNConnectionInfo()
+                self.refreshOpenVPNSettingsAfterConnect()
             case .disconnected:
-                guard let stopHandler = stopHandler else { return }
+                self.openVPNConnectionStarted = false
 
-                if vpnReachability.isTracking {
-                    vpnReachability.stopTracking()
+                if self.vpnReachability.isTracking {
+                    self.vpnReachability.stopTracking()
                 }
 
-                stopHandler()
+                let stopHandler = self.stopHandler
                 self.stopHandler = nil
+                self.ovpnAdapter?.delegate = nil
+                self.ovpnAdapter = nil
+                if let stopHandler {
+                    stopHandler()
+                } else if let startHandler = self.startHandler {
+                    self.startHandler = nil
+                    startHandler(WarpTransportError.unavailable)
+                } else if self.protoType == .openvpn {
+                    self.cancelTunnelWithError(WarpTransportError.unavailable)
+                }
             case .reconnecting:
-                reasserting = true
+                if self.protoType == .openvpn { self.reasserting = true }
             default:
                 break
             }
         }
+    }
 
     // Handle errors thrown by the OpenVPN library
     func openVPNAdapter(_ openVPNAdapter: OpenVPNAdapter, handleError error: Error) {
-        let nsError = error as NSError
-        logOpenVPNError(nsError)
+        DispatchQueue.main.async {
+            guard self.ovpnAdapter === openVPNAdapter else { return }
+            let nsError = error as NSError
+            self.logOpenVPNError(nsError)
 
-        // Handle only fatal errors
-        guard let fatal = nsError.userInfo[OpenVPNAdapterErrorFatalKey] as? Bool,
-              fatal == true else { return }
+            // Handle only fatal errors
+            guard let fatal = nsError.userInfo[OpenVPNAdapterErrorFatalKey] as? Bool,
+                  fatal == true else { return }
 
-        if vpnReachability.isTracking {
-            vpnReachability.stopTracking()
-        }
+            if self.vpnReachability.isTracking {
+                self.vpnReachability.stopTracking()
+            }
 
-        if let startHandler {
-            startHandler(error)
-            self.startHandler = nil
-        } else {
-            cancelTunnelWithError(error)
+            if let startHandler = self.startHandler {
+                self.startHandler = nil
+                startHandler(error)
+            } else {
+                self.cancelTunnelWithError(error)
+            }
         }
     }
 

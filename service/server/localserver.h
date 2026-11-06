@@ -10,6 +10,7 @@
 
 #include "ipcserver.h"
 
+#include "../../client/core/utils/warpUnderlay.h"
 #include "../../client/daemon/daemonlocalserver.h"
 #include "../../client/mozilla/networkwatcher.h"
 
@@ -47,8 +48,10 @@ public:
     LinuxDaemon daemon;
 #endif
 #ifdef Q_OS_WIN
-    DaemonLocalServer server{qApp};
     WindowsDaemon daemon;
+    DaemonLocalServer server { qApp, &daemon };
+    WindowsDaemon warpUnderlayDaemon { amnezia::warpUnderlayInterfaceName };
+    DaemonLocalServer warpUnderlayServer { qApp, &warpUnderlayDaemon, amnezia::warpUnderlaySocketPath };
 #endif
 #ifdef Q_OS_MAC
     DaemonLocalServer server{qApp};

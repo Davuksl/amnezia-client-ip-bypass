@@ -1,6 +1,7 @@
-#include "wireguard-go-version.h"
-#include "3rd/amneziawg-apple/Sources/WireGuardKitGo/wireguard.h"
 #include "3rd/amneziawg-apple/Sources/WireGuardKitC/WireGuardKitC.h"
+#include "3rd/amneziawg-apple/Sources/WireGuardKitGo/wireguard.h"
+#include "warp_transport.h"
+#include "wireguard-go-version.h"
 
 #include <stdbool.h>
 #include <stdint.h>

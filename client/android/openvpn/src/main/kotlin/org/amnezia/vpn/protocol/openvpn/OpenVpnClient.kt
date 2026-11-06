@@ -2,6 +2,7 @@ package org.amnezia.vpn.protocol.openvpn
 
 import android.net.ProxyInfo
 import android.os.Build
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import net.openvpn.ovpn3.ClientAPI_Config
@@ -31,6 +32,7 @@ class OpenVpnClient(
     private val protect: (Int) -> Boolean,
     private val onError: (String) -> Unit
 ) : ClientAPI_OpenVPNClient() {
+    @Volatile private var stopRequested = false
 
     /**************************************************************************
      * Tun builder callbacks
@@ -148,6 +150,7 @@ class OpenVpnClient(
     // Always called last after tun_builder session has been configured.
     override fun tun_builder_establish(): Int {
         Log.d(TAG, "tun_builder_establish")
+        if (stopRequested) return -1
         return establish(configBuilder)
     }
 
@@ -298,6 +301,7 @@ class OpenVpnClient(
     // and possibly provide_creds() as well before this function.
     override fun connect(): ClientAPI_Status {
         Log.d(TAG, "connect")
+        if (stopRequested) throw CancellationException("OpenVPN start cancelled")
         return super.connect()
     }
 
@@ -306,6 +310,10 @@ class OpenVpnClient(
     // The remote and ipv6 are the remote host this socket will connect to
     override fun socket_protect(socket: Int, remote: String, ipv6: Boolean): Boolean {
         Log.d(TAG, "socket_protect: $socket, $remote, $ipv6")
+        if (stopRequested) {
+            super.stop()
+            return false
+        }
         return protect(socket)
     }
 
@@ -314,6 +322,7 @@ class OpenVpnClient(
     // when connect() is running.
     override fun stop() {
         Log.d(TAG, "stop")
+        stopRequested = true
         super.stop()
     }
 
@@ -362,13 +371,16 @@ class OpenVpnClient(
     // Callback for delivering events during connect() call.
     // Will be called from the thread executing connect().
     override fun event(event: ClientAPI_Event) {
+        if (stopRequested) {
+            super.stop()
+            return
+        }
         val name = event.name
         val info = event.info
         Log.d(TAG, "OpenVpn event: $name: $info")
         when (name) {
             "COMPRESSION_ENABLED", "WARN" -> Log.w(TAG, "$name: $info")
             "CONNECTED" -> state.value = CONNECTED
-            "DISCONNECTED" -> state.value = DISCONNECTED
             "RECONNECTING" -> {
                 state.getAndUpdate { state ->
                     if (state == DISCONNECTED || state == CONNECTED) RECONNECTING

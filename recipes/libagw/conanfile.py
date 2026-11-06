@@ -108,6 +108,7 @@ class Libagw(ConanFile):
         tc.generate(env)
 
     def _go_build(self, output, buildmode, goarch, cflags, ldflags, goldflags=""):
+        output = output.replace("\\", "/")
         env = Environment()
         env.define("GOARCH", goarch)
         env.define("CGO_CFLAGS", " ".join(cflags))
@@ -115,7 +116,7 @@ class Libagw(ConanFile):
         go_ldflags = " ".join(filter(None, ["-s -w", goldflags]))
         with env.vars(self).apply():
             self.run(f'go build -buildmode={buildmode} -ldflags="{go_ldflags}" '
-                     f'-o {shlex.quote(output)} ./archive')
+                     f'-o "{output}" ./archive')
 
     def build(self):
         with chdir(self, self.source_folder):

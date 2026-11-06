@@ -5,11 +5,9 @@ extension PacketTunnelProvider {
     func startWireguard(activationAttemptId: String?,
                         errorNotifier: ErrorNotifier,
                         completionHandler: @escaping (Error?) -> Void) {
-        guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
-              let providerConfiguration = protocolConfiguration.providerConfiguration,
-              let wgConfigData: Data = providerConfiguration[Constants.wireGuardConfigKey] as? Data else {
+        guard let wgConfigData = protocolConfigurationData(for: Constants.wireGuardConfigKey) else {
             wg_log(.error, message: "Can't start, config missing")
-            completionHandler(nil)
+            completionHandler(PacketTunnelProviderError.savedProtocolConfigurationIsInvalid)
             return
         }
 
@@ -150,6 +148,10 @@ extension PacketTunnelProvider {
                 completionHandler(data)
             }
         } else if messageData.count >= 1 {
+            guard warpTransport == nil else {
+                completionHandler(nil)
+                return
+            }
             // Updates the tunnel configuration and responds with the active configuration
             wg_log(.info, message: "Switching tunnel configuration")
             guard let configString = String(data: messageData, encoding: .utf8)
@@ -186,20 +188,28 @@ extension PacketTunnelProvider {
     func stopWireguard(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         wg_log(.info, message: "Stopping tunnel: reason: \(reason.amneziaDescription)")
 
-        wgAdapter?.stop { error in
+        guard let adapter = wgAdapter else {
             ErrorNotifier.removeLastErrorFile()
-
-            if let error {
-                wg_log(.error, message: "Failed to stop WireGuard adapter: \(error.localizedDescription)")
-            }
             completionHandler()
+            return
+        }
+        adapter.stop { [weak self] error in
+            DispatchQueue.main.async {
+                if self?.wgAdapter === adapter { self?.wgAdapter = nil }
+                ErrorNotifier.removeLastErrorFile()
+
+                if let error {
+                    wg_log(.error, message: "Failed to stop WireGuard adapter: \(error.localizedDescription)")
+                }
+                completionHandler()
 
 #if os(macOS)
             // HACK: This is a filthy hack to work around Apple bug 32073323 (dup'd by us as 47526107).
             // Remove it when they finally fix this upstream and the fix has been rolled out to
             // sufficient quantities of users.
-            exit(0)
+                exit(0)
 #endif
+            }
         }
     }
 }

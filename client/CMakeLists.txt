@@ -69,6 +69,9 @@ endif()
 
 qt_standard_project_setup()
 qt_add_executable(${PROJECT} MANUAL_FINALIZATION)
+if(WIN32)
+    set_target_properties(${PROJECT} PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
 target_include_directories(${PROJECT} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
 )

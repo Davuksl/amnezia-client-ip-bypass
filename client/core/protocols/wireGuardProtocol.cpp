@@ -9,17 +9,20 @@
 #include "mozilla/localsocketcontroller.h"
 
 WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, QObject *parent)
+    : WireguardProtocol(configuration, QString(), parent)
+{
+}
+
+WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, const QString &socketPath, QObject *parent)
     : VpnProtocol(configuration, parent)
 {
-    m_impl.reset(new LocalSocketController());
+    m_impl.reset(new LocalSocketController(socketPath));
     connect(m_impl.get(), &ControllerImpl::connected, this,
             [this](const QString &pubkey, const QDateTime &connectionTimestamp) {
                 setConnectionState(Vpn::ConnectionState::Connected);
             });
     connect(m_impl.get(), &ControllerImpl::statusUpdated, this,
-            [this](const QString& serverIpv4Gateway,
-                   const QString& deviceIpv4Address, uint64_t txBytes,
-                   uint64_t rxBytes) {
+            [this](const QString &serverIpv4Gateway, const QString &deviceIpv4Address, uint64_t txBytes, uint64_t rxBytes) {
                 const QString previousGateway = m_vpnGateway;
                 const QString previousLocal = m_vpnLocalAddress;
 

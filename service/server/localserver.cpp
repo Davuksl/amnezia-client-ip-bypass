@@ -48,6 +48,12 @@ LocalServer::LocalServer(QObject *parent) : QObject(parent),
         logger.error() << "Failed to initialize the server";
         return;
     }
+#ifdef Q_OS_WIN
+    if (!warpUnderlayServer.initialize()) {
+        logger.error() << "Failed to initialize the WARP underlay server";
+        return;
+    }
+#endif
 
     m_networkWatcher.initialize();
     connect(&m_networkWatcher, &NetworkWatcher::networkChanged, &m_ipcServer, &IpcServer::networkChanged);
@@ -68,8 +74,10 @@ LocalServer::LocalServer(QObject *parent) : QObject(parent),
 
 #ifdef Q_OS_WIN
     // Signal handling for a proper shutdown.
-    QObject::connect(qApp, &QCoreApplication::aboutToQuit,
-                     []() { WindowsDaemon::instance()->deactivate(); });
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
+        daemon.deactivate();
+        warpUnderlayDaemon.deactivate();
+    });
 #endif
 }
 
@@ -77,4 +85,3 @@ LocalServer::~LocalServer()
 {
     qDebug() << "Local server stopped";
 }
-

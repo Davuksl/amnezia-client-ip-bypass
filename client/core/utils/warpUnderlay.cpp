@@ -1,6 +1,7 @@
 #include "warpUnderlay.h"
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QHostAddress>
 #include <QJsonArray>
@@ -10,6 +11,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPair>
+#include <QTcpSocket>
 #include <QTimer>
 #include <QUrl>
 
@@ -171,10 +173,43 @@ namespace
         }
         return base;
     }
+
+    std::optional<quint16> xrayServerPort(const QJsonObject &config, const QString &serverHost,
+                                          const QString &serverAddress)
+    {
+        const QJsonArray outbounds = config.value(QStringLiteral("outbounds")).toArray();
+        for (const QJsonValue &outboundValue : outbounds) {
+            const QJsonObject settings = outboundValue.toObject().value(QStringLiteral("settings")).toObject();
+            for (const QString &key : { QStringLiteral("vnext"), QStringLiteral("servers") }) {
+                const QJsonArray servers = settings.value(key).toArray();
+                for (const QJsonValue &serverValue : servers) {
+                    const QJsonObject server = serverValue.toObject();
+                    const QString address = server.value(QStringLiteral("address")).toString();
+                    const int port = server.value(QStringLiteral("port")).toInt();
+                    if ((address.compare(serverHost, Qt::CaseInsensitive) == 0 || address == serverAddress) && port > 0
+                        && port <= 65535) {
+                        return static_cast<quint16>(port);
+                    }
+                }
+            }
+        }
+        return std::nullopt;
+    }
 }
 
 namespace amnezia
 {
+    bool WarpUnderlay::supportsProtocol(DockerContainer container)
+    {
+        return container == DockerContainer::Xray || container == DockerContainer::SSXray
+                || container == DockerContainer::OpenVpn || container == DockerContainer::WireGuard
+                || container == DockerContainer::Awg || container == DockerContainer::Awg2
+#if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS)
+                || container == DockerContainer::Ipsec
+#endif
+                ;
+    }
+
     bool WarpUnderlayConfig::isValid() const
     {
         return validBase64Key(privateKey) && validBase64Key(peerPublicKey)
@@ -295,7 +330,7 @@ namespace amnezia
             { QStringLiteral("client_ip"), config.ipv4Address.section(QLatin1Char('/'), 0, 0) },
             { QStringLiteral("server_pub_key"), config.peerPublicKey },
             { QStringLiteral("hostName"), warpEndpointAddress },
-            { QStringLiteral("port"), 500 },
+            { QStringLiteral("port"), 2408 },
             { QStringLiteral("mtu"), QStringLiteral("1280") },
             { QStringLiteral("allowed_ips"), QJsonArray { vpnServerAddress + QStringLiteral("/32") } },
             { QStringLiteral("persistent_keep_alive"), QStringLiteral("25") },
@@ -322,6 +357,67 @@ namespace amnezia
             { QStringLiteral("hopType"), QStringLiteral("MultiHopEntry") },
             { QStringLiteral("awg_config_data"), awgConfig },
         };
+    }
+
+    bool WarpUnderlay::isXrayServerReachableDirectly(const QJsonObject &config, const QString &serverHost,
+                                                     const QString &serverAddress,
+                                                     const std::function<bool()> &isCancelled, int timeoutMs)
+    {
+        const auto port = xrayServerPort(config, serverHost, serverAddress);
+        if (!port || QHostAddress(serverAddress).protocol() != QAbstractSocket::IPv4Protocol || timeoutMs <= 0
+            || (isCancelled && isCancelled())) {
+            return false;
+        }
+
+        QTcpSocket socket;
+        socket.connectToHost(serverAddress, *port);
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (elapsed.elapsed() < timeoutMs) {
+            if (isCancelled && isCancelled()) {
+                socket.abort();
+                return false;
+            }
+            if (socket.waitForConnected(qMin(100, timeoutMs - static_cast<int>(elapsed.elapsed())))) {
+                socket.abort();
+                return true;
+            }
+            if (socket.state() == QAbstractSocket::UnconnectedState
+                && socket.error() != QAbstractSocket::SocketTimeoutError) {
+                return false;
+            }
+        }
+        socket.abort();
+        return false;
+    }
+
+    QString WarpUnderlay::bindOpenVpnConfig(const QString &config, const QString &serverAddress,
+                                            const QString &underlayAddress)
+    {
+        if (QHostAddress(serverAddress).protocol() != QAbstractSocket::IPv4Protocol
+            || QHostAddress(underlayAddress).protocol() != QAbstractSocket::IPv4Protocol) {
+            return { };
+        }
+        QStringList lines;
+        for (QString line : config.split(QLatin1Char('\n'))) {
+            const QString trimmed = line.trimmed();
+            if (trimmed.startsWith(QLatin1String("local "))) {
+                continue;
+            }
+            if (trimmed.startsWith(QLatin1String("remote "))) {
+                QStringList values = line.simplified().split(QLatin1Char(' '));
+                if (values.size() >= 2) {
+                    values[1] = serverAddress;
+                    line = values.join(QLatin1Char(' '));
+                }
+            } else if (trimmed.startsWith(QLatin1String("redirect-gateway"))
+                       && !trimmed.split(QLatin1Char(' ')).contains(QStringLiteral("local"))) {
+                line.append(QStringLiteral(" local"));
+            }
+            lines.append(line);
+        }
+        lines.append(QStringLiteral("local %1").arg(underlayAddress));
+        return lines.join(QLatin1Char('\n'));
     }
 
     std::optional<QJsonObject> WarpUnderlay::bindXrayConfig(const QJsonObject &config, const QString &sourceAddress,

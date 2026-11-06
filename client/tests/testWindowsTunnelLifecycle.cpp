@@ -16,6 +16,8 @@ namespace TunnelApi
     int deletions = 0;
     int closedServices = 0;
     int stopRequests = 0;
+    QString serviceName;
+    QString commandLine;
     QTemporaryDir logs;
     const SC_HANDLE scm = reinterpret_cast<SC_HANDLE>(quintptr(1));
     const SC_HANDLE service = reinterpret_cast<SC_HANDLE>(quintptr(2));
@@ -28,9 +30,11 @@ namespace TunnelApi
     {
         return exists ? service : nullptr;
     }
-    SC_HANDLE createService(SC_HANDLE, LPCWSTR, LPCWSTR, DWORD, DWORD, DWORD, DWORD, LPCWSTR, LPCWSTR, LPDWORD, LPCWSTR,
-                            LPCWSTR, LPCWSTR)
+    SC_HANDLE createService(SC_HANDLE, LPCWSTR name, LPCWSTR, DWORD, DWORD, DWORD, DWORD, LPCWSTR command, LPCWSTR,
+                            LPDWORD, LPCWSTR, LPCWSTR, LPCWSTR)
     {
+        serviceName = QString::fromWCharArray(name);
+        commandLine = QString::fromWCharArray(command);
         exists = true;
         state = SERVICE_STOPPED;
         return service;
@@ -136,6 +140,8 @@ private slots:
         TunnelApi::deletions = 0;
         TunnelApi::closedServices = 0;
         TunnelApi::stopRequests = 0;
+        TunnelApi::serviceName.clear();
+        TunnelApi::commandLine.clear();
     }
 
     void cleansUpFailedConfigurationAndCanRestart()
@@ -182,6 +188,15 @@ private slots:
         QCOMPARE(TunnelApi::deletions, 1);
         QCOMPARE(TunnelApi::closedServices, 1);
         QVERIFY(!tunnel.isRunning());
+    }
+
+    void usesIndependentInterfaceName()
+    {
+        WindowsTunnelService tunnel(QStringLiteral("AmneziaWARPUnderlay"));
+        QVERIFY(tunnel.start(QStringLiteral("[Interface]\n")));
+        QCOMPARE(TunnelApi::serviceName, QStringLiteral("AmneziaWGTunnel$AmneziaWARPUnderlay"));
+        QVERIFY(TunnelApi::commandLine.endsWith(QStringLiteral("\"AmneziaWARPUnderlay\"")));
+        QVERIFY(tunnel.stop());
     }
 };
 

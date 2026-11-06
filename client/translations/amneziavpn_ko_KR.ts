@@ -4358,6 +4358,16 @@ Create one from the current settings.</source>
         <source>Blocks network connections without VPN</source>
         <translation>VPN을 사용하지 않는 네트워크 연결을 차단합니다</translation>
     </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="95"/>
+        <source>Bypass VPN server IP blocking through WARP</source>
+        <translation>WARP를 통한 VPN 서버 IP 차단 우회</translation>
+    </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="96"/>
+        <source>Route any supported VPN protocol through WARP when the server IP is blocked</source>
+        <translation>서버 IP가 차단된 경우 지원되는 모든 VPN 프로토콜을 WARP로 라우팅</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsDns</name>

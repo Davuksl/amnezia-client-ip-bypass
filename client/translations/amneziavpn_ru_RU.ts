@@ -4359,6 +4359,16 @@ Create one from the current settings.</source>
         <source>Blocks network connections without VPN</source>
         <translation>Блокирует интернет-соединение без VPN</translation>
     </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="95"/>
+        <source>Bypass VPN server IP blocking through WARP</source>
+        <translation>Обход блокировки IP VPN-сервера через WARP</translation>
+    </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="96"/>
+        <source>Route any supported VPN protocol through WARP when the server IP is blocked</source>
+        <translation>Направлять любой поддерживаемый VPN-протокол через WARP, если IP сервера заблокирован</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsDns</name>

@@ -83,7 +83,7 @@ private slots:
         QSignalSpy useAmneziaDnsChangedSpy(m_coreController->m_appSettingsRepository, &SecureAppSettingsRepository::useAmneziaDnsChanged);
 
         bool initialValue = m_coreController->m_settingsController->isAmneziaDnsEnabled();
-        
+
         m_coreController->m_settingsUiController->toggleAmneziaDns(!initialValue);
         QVERIFY2(amneziaDnsToggledSpy.count() == 1, "amneziaDnsToggled signal should be emitted");
         QVERIFY2(amneziaDnsToggledSpy.at(0).at(0).toBool() == !initialValue, "amneziaDnsToggled should emit correct value");
@@ -96,6 +96,20 @@ private slots:
         QVERIFY2(amneziaDnsToggledSpy.count() == 2, "amneziaDnsToggled signal should be emitted again");
         QVERIFY2(useAmneziaDnsChangedSpy.count() == 2, "useAmneziaDnsChanged signal should be emitted again");
         QVERIFY2(m_coreController->m_settingsUiController->isAmneziaDnsEnabled() == initialValue, "Amnezia DNS state should be restored in SettingsUiController");
+    }
+
+    void testIpBlockBypassToggleSignal()
+    {
+        QSignalSpy uiSignal(m_coreController->m_settingsUiController, &SettingsUiController::ipBlockBypassEnabledChanged);
+        QSignalSpy repositorySignal(m_coreController->m_appSettingsRepository,
+                                    &SecureAppSettingsRepository::ipBlockBypassEnabledChanged);
+        QVERIFY(m_coreController->m_settingsUiController->isIpBlockBypassEnabled());
+        m_coreController->m_settingsUiController->toggleIpBlockBypass(false);
+        QCOMPARE(uiSignal.count(), 1);
+        QCOMPARE(repositorySignal.count(), 1);
+        QVERIFY(!m_coreController->m_settingsController->isIpBlockBypassEnabled());
+        QVERIFY(!m_coreController->m_settingsUiController->isIpBlockBypassEnabled());
+        QVERIFY(!m_coreController->m_appSettingsRepository->isIpBlockBypassEnabled());
     }
 
     void testLoggingSignals() {

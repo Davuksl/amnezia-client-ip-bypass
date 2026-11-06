@@ -70,7 +70,9 @@ public:
     void setKillSwitchEnabled(bool enabled);
     bool isStrictKillSwitchEnabled() const;
     void setStrictKillSwitchEnabled(bool enabled);
-    
+    bool isIpBlockBypassEnabled() const;
+    void setIpBlockBypassEnabled(bool enabled);
+
     bool isAutoConnect() const;
     void setAutoConnect(bool enabled);
     bool isStartMinimized() const;
@@ -129,6 +131,7 @@ signals:
     void useAmneziaDnsChanged(bool enabled);
     void saveLogsChanged(bool enabled);
     void screenshotsEnabledChanged(bool enabled);
+    void ipBlockBypassEnabledChanged(bool enabled);
     void settingsCleared();
 
 private:

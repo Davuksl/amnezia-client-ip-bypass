@@ -70,11 +70,32 @@ private slots:
         QTRY_COMPARE(peer.count("activate"), 1);
         const auto request = peer.last("activate");
         QCOMPARE(request.value("hopType").toString(), QStringLiteral("MultiHopEntry"));
-        QCOMPARE(request.value("serverPort").toInt(), 500);
+        QCOMPARE(request.value("serverPort").toInt(), 2408);
         QVERIFY(!request.contains("deviceIpv6Address"));
         QVERIFY(!request.contains("primaryDnsServer"));
         QCOMPARE(request.value("I1").toString(), QStringLiteral("<b 0x0102>"));
         QCOMPARE(request.value("allowedIPAddressRanges").toArray().size(), 1);
+    }
+
+    void forwardsIndependentUnderlayConfiguration()
+    {
+        LocalSocketTestPeer peer;
+        QVERIFY(peer.listening);
+        LocalSocketController controller(peer.server.fullServerName());
+        QJsonObject config = routeOnlyConfig();
+        config.insert("hopType", "MultiHopExit");
+        config.insert("underlayEndpoint", "192.0.2.1");
+        config.insert("underlayAddress", "172.16.0.2");
+        config.insert("underlayServerAddress", "198.51.100.10");
+        controller.activate(config);
+        QTRY_COMPARE(peer.count("status"), 1);
+        peer.send(status());
+        QTRY_COMPARE(peer.count("activate"), 1);
+        const QJsonObject request = peer.last("activate");
+        QCOMPARE(request.value("hopType").toString(), QStringLiteral("MultiHopExit"));
+        QCOMPARE(request.value("underlayAddress").toString(), QStringLiteral("172.16.0.2"));
+        QCOMPARE(request.value("underlayServerAddress").toString(), QStringLiteral("198.51.100.10"));
+        QVERIFY(request.value("excludedAddresses").toArray().isEmpty());
     }
 
     void cancelsInitialization()

@@ -32,6 +32,8 @@ class InterfaceConfig {
   QString m_serverIpv4AddrIn;
   QString m_serverPskKey;
   QString m_serverIpv6AddrIn;
+  QString m_underlayAddress;
+  QString m_underlayServerAddress;
   QString m_primaryDnsServer;
   QString m_secondaryDnsServer;
   int m_serverPort = 0;

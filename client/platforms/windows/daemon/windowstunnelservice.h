@@ -17,13 +17,13 @@ class WindowsTunnelService final : public QObject {
   Q_DISABLE_COPY_MOVE(WindowsTunnelService)
 
  public:
-  WindowsTunnelService(QObject* parent = nullptr);
-  ~WindowsTunnelService();
+     WindowsTunnelService(const QString &interfaceName = QStringLiteral("AmneziaVPN"), QObject *parent = nullptr);
+     ~WindowsTunnelService();
 
-  bool start(const QString& configData);
-  bool stop();
-  bool isRunning();
-  QString uapiCommand(const QString& command);
+     bool start(const QString &configData);
+     bool stop();
+     bool isRunning();
+     QString uapiCommand(const QString &command);
 
  signals:
   void backendFailure();
@@ -40,6 +40,8 @@ class WindowsTunnelService final : public QObject {
   // These are really SC_HANDLEs in disguise.
   void* m_scm = nullptr;
   void* m_service = nullptr;
+  QString m_interfaceName;
+  QString m_serviceName;
 };
 
 #endif  // WINDOWSTUNNELSERVICE_H

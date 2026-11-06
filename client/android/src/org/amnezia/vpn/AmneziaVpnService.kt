@@ -33,14 +33,19 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.amnezia.vpn.protocol.BadConfigException
+import org.amnezia.vpn.protocol.Protocol
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTED
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTING
 import org.amnezia.vpn.protocol.ProtocolState.DISCONNECTED
@@ -60,8 +65,8 @@ import org.json.JSONObject
 
 private const val TAG = "AmneziaVpnService"
 
-const val ACTION_DISCONNECT = "org.amnezia.vpn.action.disconnect"
-const val ACTION_CONNECT = "org.amnezia.vpn.action.connect"
+val ACTION_DISCONNECT = "${BuildConfig.APPLICATION_ID}.action.disconnect"
+val ACTION_CONNECT = "${BuildConfig.APPLICATION_ID}.action.connect"
 
 const val MSG_VPN_CONFIG = "VPN_CONFIG"
 const val MSG_ERROR = "ERROR"
@@ -100,6 +105,10 @@ open class AmneziaVpnService : VpnService() {
     private var connectionJob: Job? = null
     private var disconnectionJob: Job? = null
     private var trafficStatsUpdateJob: Job? = null
+    private val protocolOperation = Mutex()
+    private var activeProtocol: Protocol? = null
+    @Volatile private var warpTransport: WarpTransport? = null
+    private var warpMonitorJob: Job? = null
     // private var statisticsSendingJob: Job? = null
     private lateinit var networkState: NetworkState
     private lateinit var trafficStats: TrafficStats
@@ -112,25 +121,27 @@ open class AmneziaVpnService : VpnService() {
     private val isActivityConnected
         get() = clientMessengers.any { it.value.name == ACTIVITY_MESSENGER_NAME }
 
-    private val connectionExceptionHandler = CoroutineExceptionHandler { _, e ->
-        connectionJob?.cancel()
-        connectionJob = null
-        disconnectionJob?.cancel()
-        disconnectionJob = null
-        protocolState.value = DISCONNECTED
-        when (e) {
-            is IllegalArgumentException,
-            is VpnStartException,
-            is VpnException -> onError(e.message ?: e.toString())
+    private val connectionExceptionHandler = CoroutineExceptionHandler { context, e ->
+        mainScope.launch {
+            val failedJob = context[Job] ?: return@launch
+            if (connectionJob !== failedJob && disconnectionJob !== failedJob) return@launch
+            if (connectionJob === failedJob) connectionJob = null
+            if (disconnectionJob === failedJob) disconnectionJob = null
+            protocolState.value = DISCONNECTED
+            when (e) {
+                is IllegalArgumentException,
+                is VpnStartException,
+                is VpnException -> onError(e.message ?: e.toString())
 
-            is JSONException,
-            is BadConfigException -> onError("VPN config format error: ${e.message}")
+                is JSONException,
+                is BadConfigException -> onError("VPN config format error: ${e.message}")
 
-            is LoadLibraryException -> onError("${e.message}. Caused: ${e.cause?.message}")
+                is LoadLibraryException -> onError("${e.message}. Caused: ${e.cause?.message}")
 
-            is UnknownHostException -> onError("Unknown host")
+                is UnknownHostException -> onError("Unknown host")
 
-            else -> throw e
+                else -> throw e
+            }
         }
     }
 
@@ -388,6 +399,12 @@ open class AmneziaVpnService : VpnService() {
                     DISCONNECTED -> {
                         networkState.unbindNetworkListener()
                         stopTrafficStatsUpdateJob()
+                        val transport = warpTransport
+                        connectionScope.launch {
+                            protocolOperation.withLock {
+                                if (isDisconnected && transport != null && warpTransport === transport) stopWarpTransport()
+                            }
+                        }
                         // stopSendingStatistics()
                         if (!isServiceBound) stopService()
                     }
@@ -492,7 +509,7 @@ open class AmneziaVpnService : VpnService() {
 
     @MainThread
     private fun connectToVpn(vpnConfig: String) {
-        if (isConnected || protocolState.value == CONNECTING) return
+        if (isConnected || protocolState.value == CONNECTING || protocolState.value == RECONNECTING) return
 
         Log.d(TAG, "Start VPN connection")
 
@@ -519,13 +536,100 @@ open class AmneziaVpnService : VpnService() {
             return
         }
 
+        val pendingDisconnection = disconnectionJob
+        val requestedProto = vpnProto
         connectionJob = connectionScope.launch {
-            disconnectionJob?.join()
-            disconnectionJob = null
+            pendingDisconnection?.join()
+            if (disconnectionJob === pendingDisconnection) disconnectionJob = null
 
-            vpnProto?.protocol?.let { protocol ->
-                protocol.initialize(applicationContext, protocolState, ::onError)
-                protocol.startVpn(config, Builder(), ::protect)
+            protocolOperation.withLock {
+                requestedProto?.protocol?.let { protocol ->
+                    try {
+                        stopActiveProtocol()
+                        currentCoroutineContext().ensureActive()
+                        protocolState.value = CONNECTING
+                        val preparedConfig = prepareWarpTransport(config)
+                        currentCoroutineContext().ensureActive()
+                        protocol.initialize(applicationContext, protocolState, ::onError)
+                        activeProtocol = protocol
+                        protocol.startVpn(preparedConfig, Builder(), ::protect)
+                        currentCoroutineContext().ensureActive()
+                        startWarpMonitor()
+                    } catch (error: Exception) {
+                        stopActiveProtocol()
+                        throw error
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun prepareWarpTransport(config: JSONObject): JSONObject {
+        stopWarpTransport()
+        if (!config.has("warpUnderlay")) return config
+        val underlay = config.optJSONObject("warpUnderlay")
+            ?: throw BadConfigException("Invalid WARP transport configuration")
+        val protocol = config.getString("protocol").lowercase()
+        val key = "${protocol}_config_data"
+        val protocolConfig = config.optJSONObject(key)
+            ?: throw BadConfigException("Missing protocol configuration for WARP transport")
+        val transport = WarpTransport(applicationContext, ::protect)
+        warpTransport = transport
+        val rewritten = transport.start(underlay, protocol, protocolConfig)
+        transport.awaitReady()
+        return JSONObject(config.toString()).put(key, rewritten)
+    }
+
+    private fun startWarpMonitor() {
+        val transport = warpTransport ?: return
+        warpMonitorJob?.cancel()
+        warpMonitorJob = connectionScope.launch {
+            var awaitingHandshake = false
+            while (true) {
+                when (transport.state()) {
+                    0 -> {
+                        if (protocolState.value == CONNECTED) {
+                            awaitingHandshake = true
+                            protocolState.value = RECONNECTING
+                        }
+                    }
+                    1 -> {
+                        if (awaitingHandshake && protocolState.value == RECONNECTING) {
+                            awaitingHandshake = false
+                            protocolState.value = CONNECTED
+                        }
+                    }
+                    else -> {
+                        mainScope.launch {
+                            if (warpTransport === transport) {
+                                onError("WARP transport unavailable")
+                                disconnect()
+                            }
+                        }
+                        return@launch
+                    }
+                }
+                delay(250L)
+            }
+        }
+    }
+
+    private fun stopWarpTransport() {
+        warpMonitorJob?.cancel()
+        warpMonitorJob = null
+        warpTransport?.close()
+        warpTransport = null
+    }
+
+    private fun stopActiveProtocol() {
+        val protocol = activeProtocol
+        activeProtocol = null
+        try {
+            protocol?.stopVpn()
+        } finally {
+            stopWarpTransport()
+            if (protocol == null && protocolState.value == DISCONNECTING) {
+                protocolState.value = DISCONNECTED
             }
         }
     }
@@ -538,11 +642,14 @@ open class AmneziaVpnService : VpnService() {
 
         protocolState.value = DISCONNECTING
 
+        val pendingConnection = connectionJob
         disconnectionJob = connectionScope.launch {
-            connectionJob?.cancelAndJoin()
-            connectionJob = null
+            pendingConnection?.cancelAndJoin()
+            if (connectionJob === pendingConnection) connectionJob = null
 
-            vpnProto?.protocol?.stopVpn()
+            protocolOperation.withLock {
+                stopActiveProtocol()
+            }
 
             try {
                 withTimeout(DISCONNECT_TIMEOUT) {
@@ -565,7 +672,22 @@ open class AmneziaVpnService : VpnService() {
         protocolState.value = RECONNECTING
 
         connectionJob = connectionScope.launch {
-            vpnProto?.protocol?.reconnectVpn(Builder(), ::protect)
+            protocolOperation.withLock {
+                try {
+                    warpMonitorJob?.cancelAndJoin()
+                    warpMonitorJob = null
+                    warpTransport?.let { transport ->
+                        transport.rebind()
+                        transport.awaitReady()
+                    }
+                    currentCoroutineContext().ensureActive()
+                    activeProtocol?.reconnectVpn(Builder(), ::protect)
+                    startWarpMonitor()
+                } catch (error: Exception) {
+                    stopActiveProtocol()
+                    throw error
+                }
+            }
         }
     }
 

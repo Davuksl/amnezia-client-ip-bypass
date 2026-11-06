@@ -98,11 +98,10 @@ extension PacketTunnelProvider {
     }
 
     func startXray(completionHandler: @escaping (Error?) -> Void) {
+        let generation = tunnelGeneration
 
         // Xray configuration
-        guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
-              let providerConfiguration = protocolConfiguration.providerConfiguration,
-              let configData = providerConfiguration[Constants.xrayConfigKey] as? Data else {
+        guard let configData = protocolConfigurationData(for: Constants.xrayConfigKey) else {
             xrayLog(.error, message: "Can't get xray configuration")
             completionHandler(XrayErrors.noXrayConfig)
             return
@@ -176,27 +175,33 @@ extension PacketTunnelProvider {
             let updatedData = try JSONSerialization.data(withJSONObject: jsonDict, options: [])
 
             setTunnelNetworkSettings(settings) { [weak self] error in
-                if let error {
-                    completionHandler(error)
-                    return
-                }
-
-                self?.updateActiveInterfaceIndexForCurrentPath()
-
-                // Launch xray
-                self?.setupAndStartXray(configData: updatedData) { xrayError in
-                    if let xrayError {
-                        completionHandler(xrayError)
+                DispatchQueue.main.async {
+                    guard let self, self.protoType == .xray, self.tunnelGeneration == generation else {
+                        completionHandler(WarpTransportError.cancelled)
+                        return
+                    }
+                    if let error {
+                        completionHandler(error)
                         return
                     }
 
-                    // Launch hevSocks
-                    self?.setupAndRunTun2socks(configData: updatedData,
-                                               address: address,
-                                               port: port,
-                                               username: socksCredentials.username,
-                                               password: socksCredentials.password,
-                                               completionHandler: completionHandler)
+                    self.updateActiveInterfaceIndexForCurrentPath()
+
+                    // Launch xray
+                    self.setupAndStartXray(configData: updatedData) { xrayError in
+                        if let xrayError {
+                            completionHandler(xrayError)
+                            return
+                        }
+
+                        // Launch hevSocks
+                        self.setupAndRunTun2socks(configData: updatedData,
+                                                address: address,
+                                                port: port,
+                                                username: socksCredentials.username,
+                                                password: socksCredentials.password,
+                                                completionHandler: completionHandler)
+                    }
                 }
             }
         } catch {
@@ -205,10 +210,11 @@ extension PacketTunnelProvider {
         }
     }
 
-    func stopXray(completionHandler: () -> Void) {
-        Socks5Tunnel.quit()
-        LibXrayStopXray()
-        completionHandler()
+    func stopXray(completionHandler: @escaping () -> Void) {
+        socks5Tunnel.stop {
+            LibXrayStopXray()
+            completionHandler()
+        }
     }
 
     func sockCallback(fd: uintptr_t) {
@@ -345,10 +351,12 @@ extension PacketTunnelProvider {
             return
         }
 
-        DispatchQueue.global().async {
-            xrayLog(.info, message: "Hev socks started")
-            completionHandler(nil)
-            Socks5Tunnel.run(withConfig: configurationFilePath)
-        }
+        let generation = tunnelGeneration
+        socks5Tunnel.start(withConfig: configurationFilePath,
+                           failureHandler: { [weak self] error in
+                               guard let self, self.protoType == .xray,
+                                     self.tunnelGeneration == generation else { return }
+                               self.cancelTunnelWithError(error)
+                           }, completionHandler: completionHandler)
     }
 }

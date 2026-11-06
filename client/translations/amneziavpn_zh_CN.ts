@@ -4358,6 +4358,16 @@ Create one from the current settings.</source>
         <source>Blocks network connections without VPN</source>
         <translation>阻止未经 VPN 的网络连接</translation>
     </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="95"/>
+        <source>Bypass VPN server IP blocking through WARP</source>
+        <translation>通过 WARP 绕过 VPN 服务器 IP 封锁</translation>
+    </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="96"/>
+        <source>Route any supported VPN protocol through WARP when the server IP is blocked</source>
+        <translation>当服务器 IP 被封锁时，通过 WARP 路由所有受支持的 VPN 协议</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsDns</name>

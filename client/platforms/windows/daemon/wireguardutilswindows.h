@@ -22,14 +22,18 @@ class WireguardUtilsWindows final : public WireguardUtils {
   Q_OBJECT
 
  public:
-  static std::unique_ptr<WireguardUtilsWindows> create(WindowsFirewall* fw,
-                                                       QObject* parent);
-  ~WireguardUtilsWindows();
+     static std::unique_ptr<WireguardUtilsWindows> create(WindowsFirewall *fw, QObject *parent,
+                                                          const QString &interfaceName = s_interfaceName());
+     ~WireguardUtilsWindows();
 
-  bool interfaceExists() override { return m_tunnel.isRunning(); }
+     bool interfaceExists() override
+     {
+         return m_tunnel.isRunning();
+     }
   bool isInterfaceReady(const InterfaceConfig &config) const override;
-  QString interfaceName() override {
-    return WireguardUtilsWindows::s_interfaceName();
+  QString interfaceName() override
+  {
+      return m_interfaceName;
   }
   static const QString s_interfaceName() { return "AmneziaVPN"; }
   bool addInterface(const InterfaceConfig& config) override;
@@ -51,14 +55,15 @@ class WireguardUtilsWindows final : public WireguardUtils {
   void backendFailure();
 
  private:
-  WireguardUtilsWindows(QObject* parent, WindowsFirewall* fw);
-  void buildMibForwardRow(const IPAddress& prefix, void* row);
+     WireguardUtilsWindows(QObject *parent, WindowsFirewall *fw, const QString &interfaceName);
+     void buildMibForwardRow(const IPAddress &prefix, void *row);
 
-  quint64 m_luid = 0;
-  bool m_managesFirewall = false;
-  WindowsTunnelService m_tunnel;
-  QPointer<WindowsRouteMonitor> m_routeMonitor;
-  QPointer<WindowsFirewall> m_firewall;
+     quint64 m_luid = 0;
+     bool m_managesFirewall = false;
+     QString m_interfaceName;
+     WindowsTunnelService m_tunnel;
+     QPointer<WindowsRouteMonitor> m_routeMonitor;
+     QPointer<WindowsFirewall> m_firewall;
 };
 
 #endif  // WIREGUARDUTILSWINDOWS_H

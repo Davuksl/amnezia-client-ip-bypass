@@ -12,6 +12,9 @@ namespace amnezia
         constexpr QLatin1String underlayEndpoint("underlayEndpoint");
         constexpr QLatin1String underlayAddress("underlayAddress");
         constexpr QLatin1String underlayServerAddress("underlayServerAddress");
+        constexpr QLatin1String underlayServerHost("underlayServerHost");
+        constexpr QLatin1String underlayInterface("underlayInterface");
+        constexpr QLatin1String warpUnderlay("warpUnderlay");
         constexpr QLatin1String userName("userName");
         constexpr QLatin1String password("password");
         constexpr QLatin1String port("port");

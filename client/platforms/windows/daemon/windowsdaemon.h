@@ -14,17 +14,15 @@
 #include "windowstunnelservice.h"
 #include "wireguardutilswindows.h"
 
-#define TUNNEL_SERVICE_NAME L"AmneziaWGTunnel$AmneziaVPN"
-
 class WindowsDaemon final : public Daemon {
   Q_DISABLE_COPY_MOVE(WindowsDaemon)
 
  public:
-  WindowsDaemon();
-  ~WindowsDaemon();
+     explicit WindowsDaemon(const QString &interfaceName = QStringLiteral("AmneziaVPN"));
+     ~WindowsDaemon();
 
-  void prepareActivation(const InterfaceConfig& config, int inetAdapterIndex = 0) override;
-  void activateSplitTunnel(const InterfaceConfig& config, int vpnAdapterIndex = 0) override;
+     void prepareActivation(const InterfaceConfig &config, int inetAdapterIndex = 0) override;
+     void activateSplitTunnel(const InterfaceConfig &config, int vpnAdapterIndex = 0) override;
 
  protected:
   bool run(Op op, const InterfaceConfig& config) override;

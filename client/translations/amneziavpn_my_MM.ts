@@ -4358,6 +4358,16 @@ Create one from the current settings.</source>
         <source>Blocks network connections without VPN</source>
         <translation>VPN မရှိဘဲ ကွန်ရက် ချိတ်ဆက်မှုများကို ပိတ်ဆို့သည်</translation>
     </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="95"/>
+        <source>Bypass VPN server IP blocking through WARP</source>
+        <translation>WARP ဖြင့် VPN ဆာဗာ IP ပိတ်ဆို့မှုကို ကျော်လွှားရန်</translation>
+    </message>
+    <message>
+        <location filename="../ui/qml/Pages2/PageSettingsConnection.qml" line="96"/>
+        <source>Route any supported VPN protocol through WARP when the server IP is blocked</source>
+        <translation>ဆာဗာ IP ပိတ်ဆို့ခံရပါက ပံ့ပိုးထားသော VPN ပရိုတိုကောအားလုံးကို WARP မှတစ်ဆင့် ပို့ပါ</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsDns</name>

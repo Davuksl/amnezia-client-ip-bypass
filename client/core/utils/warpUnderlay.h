@@ -8,8 +8,13 @@
 #include <functional>
 #include <optional>
 
+#include "core/utils/containerEnum.h"
+
 namespace amnezia
 {
+    inline const QString warpUnderlayInterfaceName = QStringLiteral("AmneziaWARPUnderlay");
+    inline const QString warpUnderlaySocketPath = QStringLiteral("\\\\.\\pipe\\amneziawarpunderlay");
+
     struct WarpUnderlayConfig
     {
         QString privateKey;
@@ -28,9 +33,15 @@ namespace amnezia
     public:
         static std::optional<WarpUnderlayConfig> registerDevice(const QStringList &apiBases = { },
                                                                 const std::function<bool()> &isCancelled = { });
+        static bool supportsProtocol(DockerContainer container);
         static std::optional<QJsonObject> createAwgConfig(const WarpUnderlayConfig &config,
                                                           const QString &warpEndpointAddress,
                                                           const QString &vpnServerAddress, const QString &initPacket);
+        static bool isXrayServerReachableDirectly(const QJsonObject &config, const QString &serverHost,
+                                                  const QString &serverAddress,
+                                                  const std::function<bool()> &isCancelled = { }, int timeoutMs = 2500);
+        static QString bindOpenVpnConfig(const QString &config, const QString &serverAddress,
+                                         const QString &underlayAddress);
         static std::optional<QJsonObject> bindXrayConfig(const QJsonObject &config, const QString &sourceAddress,
                                                          const QString &interfaceName, const QString &serverHost,
                                                          const QString &serverAddress);

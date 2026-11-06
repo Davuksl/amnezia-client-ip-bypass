@@ -1,7 +1,8 @@
 from conan import ConanFile
 from conan.tools.layout import basic_layout
 from conan.tools.scm import Git
-from conan.tools.files import copy, collect_libs
+from conan.tools.files import copy, collect_libs, load, save
+from conan.errors import ConanInvalidConfiguration
 from conan.internal.model.pkg_type import PackageType
 from conan.tools.gnu import AutotoolsToolchain, Autotools
 from conan.tools.apple import is_apple_os
@@ -52,6 +53,39 @@ class HevSocks5Tunnel(ConanFile):
         tc.generate()
 
     def build(self):
+        if is_apple_os(self):
+            source_path = os.path.join(self.source_folder, "src", "hev-socks5-tunnel.c")
+            source = load(self, source_path).replace("\r\n", "\n")
+            blocking_stop = """    for (;;) {
+        fd = READ_ONCE (event_fds[1]);
+        if (fd >= 0)
+            break;
+        /* Wait for async initialization */
+        usleep (100 * 1000);
+    }
+
+    res = write (fd, &res, 1);
+    assert (res > 0 && "socks5 tunnel write event");"""
+            nonblocking_stop = """    fd = READ_ONCE (event_fds[1]);
+    if (fd >= 0)
+        send (fd, &res, 1, MSG_DONTWAIT);"""
+            readiness_function = "\nint\nhev_socks5_tunnel_is_running (void)\n{\n    return READ_ONCE (run);\n}\n"
+            if blocking_stop in source:
+                source = source.replace("#include <sys/ioctl.h>", "#include <sys/ioctl.h>\n#include <sys/socket.h>")
+                source = source.replace(blocking_stop, nonblocking_stop)
+                source += readiness_function
+            elif nonblocking_stop not in source or readiness_function not in source:
+                raise ConanInvalidConfiguration("HEV stop implementation does not match the pinned version")
+            save(self, source_path, source)
+            header_path = os.path.join(self.source_folder, "src", "hev-main.h")
+            header = load(self, header_path).replace("\r\n", "\n")
+            stop_declaration = "void hev_socks5_tunnel_quit (void);"
+            readiness_declaration = "int hev_socks5_tunnel_is_running (void);"
+            if readiness_declaration not in header:
+                if stop_declaration not in header:
+                    raise ConanInvalidConfiguration("HEV public API does not match the pinned version")
+                header = header.replace(stop_declaration, stop_declaration + "\n" + readiness_declaration)
+            save(self, header_path, header)
         autotools = Autotools(self)
         autotools.make("shared" if self.options.shared else "static")
 

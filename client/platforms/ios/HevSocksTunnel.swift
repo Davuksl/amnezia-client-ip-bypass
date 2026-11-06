@@ -1,7 +1,15 @@
 import HevSocks5Tunnel
+import Foundation
 import NetworkExtension
 
-public enum Socks5Tunnel {
+final class Socks5Tunnel {
+    private let lock = NSLock()
+    private var stopRequested = false
+    private var isRunning = false
+    private var didRequestStop = false
+    private var timer: DispatchSourceTimer?
+    private var startHandler: ((Error?) -> Void)?
+    private var stopHandlers: [() -> Void] = []
 
     private static var tunnelFileDescriptor: Int32? {
         var ctlInfo = ctl_info()
@@ -60,15 +68,80 @@ public enum Socks5Tunnel {
         }
     }
 
-    @discardableResult
-    public static func run(withConfig filePath: String) -> Int32 {
-        guard let fileDescriptor = self.tunnelFileDescriptor else {
-            fatalError("Get tunnel file descriptor failed.")
+    func start(withConfig filePath: String,
+               failureHandler: @escaping (Error) -> Void,
+               completionHandler: @escaping (Error?) -> Void) {
+        guard !isRunning else {
+            completionHandler(WarpTransportError.unavailable)
+            return
         }
-        return hev_socks5_tunnel_main(filePath.cString(using: .utf8), fileDescriptor)
+        guard let fileDescriptor = Self.tunnelFileDescriptor else {
+            completionHandler(WarpTransportError.unavailable)
+            return
+        }
+        isRunning = true
+        didRequestStop = false
+        lock.lock()
+        stopRequested = false
+        lock.unlock()
+        startHandler = completionHandler
+        let deadline = Date().addingTimeInterval(30)
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(50))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            if self.isStopping {
+                if !self.didRequestStop, hev_socks5_tunnel_is_running() != 0 {
+                    self.didRequestStop = true
+                    hev_socks5_tunnel_quit()
+                }
+            } else if hev_socks5_tunnel_is_running() != 0 {
+                let handler = self.startHandler
+                self.startHandler = nil
+                handler?(nil)
+            } else if Date() > deadline, let handler = self.startHandler {
+                self.startHandler = nil
+                handler(WarpTransportError.unavailable)
+            }
+        }
+        self.timer = timer
+        timer.resume()
+        DispatchQueue.global(qos: .utility).async {
+            if !self.isStopping {
+                _ = hev_socks5_tunnel_main(filePath.cString(using: .utf8), fileDescriptor)
+            }
+            DispatchQueue.main.async {
+                self.isRunning = false
+                self.timer?.cancel()
+                self.timer = nil
+                let handler = self.startHandler
+                self.startHandler = nil
+                if let handler {
+                    handler(self.isStopping ? WarpTransportError.cancelled : WarpTransportError.unavailable)
+                } else if !self.isStopping {
+                    failureHandler(WarpTransportError.unavailable)
+                }
+                let handlers = self.stopHandlers
+                self.stopHandlers.removeAll()
+                for handler in handlers { handler() }
+            }
+        }
     }
 
-    public static func quit() {
-        hev_socks5_tunnel_quit()
+    func stop(completionHandler: @escaping () -> Void) {
+        guard isRunning else {
+            completionHandler()
+            return
+        }
+        stopHandlers.append(completionHandler)
+        lock.lock()
+        stopRequested = true
+        lock.unlock()
+    }
+
+    private var isStopping: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopRequested
     }
 }

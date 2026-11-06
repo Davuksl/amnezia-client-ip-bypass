@@ -344,6 +344,17 @@ void SecureAppSettingsRepository::setStrictKillSwitchEnabled(bool enabled)
     setValue("Conf/strictKillSwitchEnabled", enabled);
 }
 
+bool SecureAppSettingsRepository::isIpBlockBypassEnabled() const
+{
+    return value("Conf/ipBlockBypassEnabled", true).toBool();
+}
+
+void SecureAppSettingsRepository::setIpBlockBypassEnabled(bool enabled)
+{
+    setValue("Conf/ipBlockBypassEnabled", enabled);
+    emit ipBlockBypassEnabledChanged(enabled);
+}
+
 bool SecureAppSettingsRepository::isAutoConnect() const
 {
     return value("Conf/autoConnect", false).toBool();

@@ -1,7 +1,7 @@
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.layout import basic_layout
-from conan.tools.files import get, copy, collect_libs
+from conan.tools.files import chdir, get, copy, collect_libs, replace_in_file
 from conan.tools.apple import is_apple_os
 from conan.tools.gnu import AutotoolsToolchain, Autotools
 
@@ -11,6 +11,10 @@ class AwgApple(ConanFile):
     name = "awg-apple"
     version = "3.1.4"
     settings = "os", "arch", "compiler"
+
+    def export_sources(self):
+        source = os.path.join(self.recipe_folder, "../../client/platforms/warp")
+        copy(self, "*", src=source, dst=os.path.join(self.export_sources_folder, "warp"))
 
     @property
     def _goarch(self):
@@ -66,11 +70,33 @@ class AwgApple(ConanFile):
         tc.generate()
 
     def build(self):
+        go_folder = os.path.join(self.source_folder, "Sources", "WireGuardKitGo")
+        copy(self, "*", src=os.path.join(self.source_folder, "warp", "go"),
+             dst=os.path.join(go_folder, "warptransport"), excludes="*_test.go")
+        copy(self, "exports.go", src=os.path.join(self.source_folder, "warp", "native"), dst=go_folder)
+        copy(self, "warp_transport.h", src=os.path.join(self.source_folder, "warp", "native"), dst=go_folder)
+        module = os.path.join(go_folder, "go.mod")
+        with open(module, encoding="utf-8") as source:
+            contents = source.read()
+        if "amnezia/warptransport" not in contents:
+            with open(module, "a", encoding="utf-8") as source:
+                source.write("\nrequire amnezia/warptransport v0.0.0\nreplace amnezia/warptransport => ./warptransport\n")
+        replace_in_file(self, os.path.join(go_folder, "api-xray.go"),
+                        '"syscall"', '"net"\n\t"syscall"')
+        replace_in_file(self, os.path.join(go_folder, "api-xray.go"),
+                        'func(net, addr string, conn syscall.RawConn) error {',
+                        'func(network, addr string, conn syscall.RawConn) error {\n'
+                        '\t\thost, _, _ := net.SplitHostPort(addr)\n'
+                        '\t\tif ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {\n'
+                        '\t\t\treturn nil\n\t\t}')
+        with chdir(self, go_folder):
+            self.run("go mod tidy")
         autotools = Autotools(self)
         autotools.make()
         autotools.make("version-header")
 
     def package(self):
+        copy(self, "warp_transport.h", src=self.build_folder, dst=os.path.join(self.package_folder, "include"))
         copy(self, "wireguard.h", src=self.build_folder, dst=os.path.join(self.package_folder, "include"))
         copy(self, "*.h", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "include"))
         copy(self, "*.a", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "lib"))

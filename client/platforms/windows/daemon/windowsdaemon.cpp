@@ -30,22 +30,22 @@ namespace {
 Logger logger("WindowsDaemon");
 }
 
-WindowsDaemon::WindowsDaemon() : Daemon(nullptr) {
-  MZ_COUNT_CTOR(WindowsDaemon);
-  m_firewallManager = WindowsFirewall::create(this);
-  Q_ASSERT(m_firewallManager != nullptr);
+WindowsDaemon::WindowsDaemon(const QString &interfaceName) : Daemon(nullptr)
+{
+    MZ_COUNT_CTOR(WindowsDaemon);
+    m_firewallManager = WindowsFirewall::create(this);
+    Q_ASSERT(m_firewallManager != nullptr);
 
-  m_wgutils = WireguardUtilsWindows::create(m_firewallManager, this);
-  m_dnsutils = new DnsUtilsWindows(this);
-  m_splitTunnelManager = WindowsSplitTunnel::create(m_firewallManager);
+    m_wgutils = WireguardUtilsWindows::create(m_firewallManager, this, interfaceName);
+    m_dnsutils = new DnsUtilsWindows(this);
+    m_splitTunnelManager = WindowsSplitTunnel::create(m_firewallManager);
 
-  connect(m_wgutils.get(), &WireguardUtilsWindows::backendFailure, this,
-          &WindowsDaemon::monitorBackendFailure);
-  connect(this, &WindowsDaemon::activationFailure, [this]() {
-      if (!m_routeOnly) {
-          m_firewallManager->disableKillSwitch();
-      }
-  });
+    connect(m_wgutils.get(), &WireguardUtilsWindows::backendFailure, this, &WindowsDaemon::monitorBackendFailure);
+    connect(this, &WindowsDaemon::activationFailure, [this]() {
+        if (!m_routeOnly) {
+            m_firewallManager->disableKillSwitch();
+        }
+    });
 }
 
 WindowsDaemon::~WindowsDaemon() {

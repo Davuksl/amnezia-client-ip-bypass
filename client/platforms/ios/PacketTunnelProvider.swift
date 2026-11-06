@@ -39,10 +39,11 @@ struct Constants {
 class PacketTunnelProvider: NEPacketTunnelProvider {
     var wgAdapter: WireGuardAdapter?
     var ovpnAdapter: OpenVPNAdapter?
+    let socks5Tunnel = Socks5Tunnel()
     private lazy var openVPNPacketFlowAdapter = PacketTunnelFlowAdapter(flow: packetFlow)
     private let pathMonitorQueue = DispatchQueue(label: Constants.processQueueName + ".path-monitor")
     private let networkChangeQueue = DispatchQueue(label: Constants.processQueueName + ".network-change")
-    private let pathMonitor = NWPathMonitor()
+    let pathMonitor = NWPathMonitor()
     private var didReceiveInitialPathUpdate = false
     private var currentPath: Network.NWPath?
     private var currentPathSignature: String?
@@ -66,7 +67,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     var startHandler: ((Error?) -> Void)?
     var stopHandler: (() -> Void)?
+    var openVPNConnectionStarted = false
     var protoType: TunnelProtoType?
+    var warpTransport: WarpTransport?
+    var warpProtocolConfiguration: Data?
+    private(set) var tunnelGeneration: UInt64 = 0
+    private var tunnelStopHandlers: [() -> Void] = []
     
     var activeIfaceIdx: UInt32 = 0
 
@@ -77,36 +83,47 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     override init() {
         super.init()
         pathMonitor.pathUpdateHandler = { [weak self] path in
-            guard let self else { return }
-            self.currentPath = path
-            let signature = self.pathSignature(for: path)
-            let hasMeaningfulChange = self.currentPathSignature != signature
-            self.currentPathSignature = signature
-            self.updateActiveInterfaceIndex(for: path)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.currentPath = path
+                let signature = self.pathSignature(for: path)
+                let hasMeaningfulChange = self.currentPathSignature != signature
+                self.currentPathSignature = signature
+                self.updateActiveInterfaceIndex(for: path)
 
-            guard self.didReceiveInitialPathUpdate else {
-                self.didReceiveInitialPathUpdate = true
-                return
+                guard self.didReceiveInitialPathUpdate else {
+                    self.didReceiveInitialPathUpdate = true
+                    return
+                }
+
+                guard hasMeaningfulChange, let proto = self.protoType else { return }
+
+                if let transport = self.warpTransport {
+                    self.reasserting = true
+                    transport.rebind(interfaceIndex: self.physicalInterfaceIndex(for: path)) { [weak self, weak transport] error in
+                        guard let self, self.warpTransport === transport else { return }
+                        if let error { self.cancelTunnelWithError(error) }
+                    }
+                    return
+                }
+
+                // WireGuard/AWG and OpenVPN manages network changes internally in its own adapter.
+                if proto == .wireguard || proto == .openvpn {
+                    return
+                }
+
+                if proto == .openvpn {
+                    self.scheduleOpenVPNReconnect(reason: "NWPath changed")
+                    return
+                }
+
+                if self.isApplyingNetworkChange || self.reasserting {
+                    xrayLog(.debug, message: "Ignoring path change while xray restart is in progress")
+                    return
+                }
+
+                self.scheduleNetworkChangeHandling(for: proto, path: path)
             }
-
-            guard hasMeaningfulChange, let proto = self.protoType else { return }
-
-            // WireGuard/AWG and OpenVPN manages network changes internally in its own adapter.
-            if proto == .wireguard || proto == .openvpn {
-                return
-            }
-
-            if proto == .openvpn {
-                self.scheduleOpenVPNReconnect(reason: "NWPath changed")
-                return
-            }
-
-            if self.isApplyingNetworkChange || self.reasserting {
-                xrayLog(.debug, message: "Ignoring path change while xray restart is in progress")
-                return
-            }
-
-            self.scheduleNetworkChangeHandling(for: proto, path: path)
         }
         pathMonitor.start(queue: pathMonitorQueue)
 
@@ -198,7 +215,35 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
   }
 
     override func startTunnel(options: [String : NSObject]? = nil,
-                              completionHandler: @escaping ((any Error)?) -> Void) {
+                               completionHandler: @escaping ((any Error)?) -> Void) {
+        DispatchQueue.main.async {
+            self.beginTunnel(options: options, completionHandler: completionHandler)
+        }
+    }
+
+    private func beginTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        guard protoType == nil, warpTransport == nil, tunnelStopHandlers.isEmpty else {
+            completionHandler(WarpTransportError.unavailable)
+            return
+        }
+        tunnelGeneration &+= 1
+        let generation = tunnelGeneration
+        var didFinishStart = false
+        let finishStart: (Error?) -> Void = { [weak self] error in
+            DispatchQueue.main.async {
+                guard !didFinishStart else { return }
+                didFinishStart = true
+                guard let self, self.tunnelGeneration == generation else {
+                    completionHandler(WarpTransportError.cancelled)
+                    return
+                }
+                if let error {
+                    self.endTunnel(with: .connectionFailed) { completionHandler(error) }
+                } else {
+                    completionHandler(error)
+                }
+            }
+        }
         let activationAttemptId = options?[Constants.kActivationAttemptId] as? String
         let errorNotifier = ErrorNotifier(activationAttemptId: activationAttemptId)
 
@@ -213,6 +258,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
 
+        protoType = nil
         if let protocolConfiguration = protocolConfiguration as? NETunnelProviderProtocol {
             let providerConfiguration = protocolConfiguration.providerConfiguration
             let providerKeys = providerConfiguration?.keys.sorted().joined(separator: ",") ?? ""
@@ -234,7 +280,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         guard let protoType else {
             neLog(.error, message: "Protocol is not selected")
             let error = NSError(domain: "Protocol is not selected", code: 0)
-            completionHandler(error)
+            finishStart(error)
             return
         }
 
@@ -243,40 +289,75 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         didReceiveInitialPathUpdate = false
         updateActiveInterfaceIndexForCurrentPath()
 
-        switch protoType {
-        case .wireguard:
-            startWireguard(activationAttemptId: activationAttemptId,
-                           errorNotifier: errorNotifier,
-                           completionHandler: completionHandler)
-        case .openvpn:
-            startOpenVPN(completionHandler: completionHandler)
-        case .xray:
-            startXray(completionHandler: completionHandler)
-
+        prepareWarpTransport { [weak self] error in
+            guard let self, self.tunnelGeneration == generation else {
+                finishStart(WarpTransportError.cancelled)
+                return
+            }
+            if let error {
+                finishStart(error)
+                return
+            }
+            switch protoType {
+            case .wireguard:
+                self.startWireguard(activationAttemptId: activationAttemptId,
+                                    errorNotifier: errorNotifier,
+                                    completionHandler: finishStart)
+            case .openvpn:
+                self.startOpenVPN(completionHandler: finishStart)
+            case .xray:
+                self.startXray(completionHandler: finishStart)
+            }
         }
     }
 
   
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            self.endTunnel(with: reason, completionHandler: completionHandler)
+        }
+    }
+
+    private func endTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        tunnelStopHandlers.append(completionHandler)
+        guard tunnelStopHandlers.count == 1 else { return }
+        tunnelGeneration &+= 1
         cancelPendingOpenVPNReconnect()
         cancelPendingNetworkChangeHandling()
 
-        guard let protoType else {
-            neLog(.info, message: "Stopping tunnel without protocol: reason: \(reason.amneziaDescription)")
-            completionHandler()
-            return
+        let protocolType = protoType
+        protoType = nil
+        let finishStop = {
+            self.reasserting = false
+            let handlers = self.tunnelStopHandlers
+            self.tunnelStopHandlers.removeAll()
+            for handler in handlers { handler() }
         }
+        let stopProtocol = {
+            guard let protocolType else {
+                neLog(.info, message: "Stopping tunnel without protocol: reason: \(reason.amneziaDescription)")
+                finishStop()
+                return
+            }
 
-        switch protoType {
-        case .wireguard:
-            stopWireguard(with: reason,
-                          completionHandler: completionHandler)
-        case .openvpn:
-            stopOpenVPN(with: reason,
-                        completionHandler: completionHandler)
-        case .xray:
-            xrayLog(.info, message: "Stopping tunnel: reason: \(reason.amneziaDescription)")
-            stopXray(completionHandler: completionHandler)
+            switch protocolType {
+            case .wireguard:
+                self.stopWireguard(with: reason,
+                                   completionHandler: finishStop)
+            case .openvpn:
+                self.stopOpenVPN(with: reason,
+                                 completionHandler: finishStop)
+            case .xray:
+                xrayLog(.info, message: "Stopping tunnel: reason: \(reason.amneziaDescription)")
+                self.stopXray(completionHandler: finishStop)
+            }
+        }
+        if let transport = warpTransport {
+            warpTransport = nil
+            warpProtocolConfiguration = nil
+            transport.stop(completion: stopProtocol)
+        } else {
+            stopProtocol()
         }
     }
   
@@ -316,10 +397,16 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         updateActiveInterfaceIndex(for: changePath)
         reasserting = true
         xrayLog(.info, message: "Applying network change to xray tunnel")
-        stopXray { }
-        startXray { [weak self] error in
-            self?.reasserting = false
-            completion(error)
+        let generation = tunnelGeneration
+        stopXray { [weak self] in
+            guard let self, self.protoType == .xray, self.tunnelGeneration == generation else {
+                completion(WarpTransportError.cancelled)
+                return
+            }
+            self.startXray { [weak self] error in
+                self?.reasserting = false
+                completion(error)
+            }
         }
     }
 

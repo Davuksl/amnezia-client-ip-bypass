@@ -700,6 +700,17 @@ bool IosController::setupAwg()
     return startWireGuard(wgConfigDocStr);
 }
 
+static NSDictionary *providerConfiguration(NSString *protocolKey, NSData *protocolData, const QJsonObject &rawConfig)
+{
+    NSMutableDictionary *configuration = [NSMutableDictionary dictionaryWithObject:protocolData forKey:protocolKey];
+    if (rawConfig.contains(configKey::warpUnderlay)) {
+        const QByteArray underlay =
+                QJsonDocument(rawConfig.value(configKey::warpUnderlay).toObject()).toJson(QJsonDocument::Compact);
+        configuration[@"warpUnderlay"] = [NSData dataWithBytes:underlay.constData() length:underlay.size()];
+    }
+    return configuration;
+}
+
 bool IosController::startOpenVPN(const QString &config)
 {
     qDebug() << "IosController::startOpenVPN";
@@ -708,7 +719,7 @@ bool IosController::startOpenVPN(const QString &config)
     tunnelProtocol.providerBundleIdentifier = [NSString stringWithUTF8String:VPN_NE_BUNDLEID];
     QByteArray configUtf8 = config.toUtf8();
     NSData *ovpnConfigData = [NSData dataWithBytes:configUtf8.constData() length:configUtf8.size()];
-    tunnelProtocol.providerConfiguration = @{@"ovpn": ovpnConfigData};
+    tunnelProtocol.providerConfiguration = providerConfiguration(@"ovpn", ovpnConfigData, m_rawConfig);
     tunnelProtocol.serverAddress = m_serverAddress;
     if (@available(iOS 14.0, macOS 11.0, *)) {
         int splitTunnelType = 0;
@@ -743,21 +754,11 @@ bool IosController::startOpenVPN(const QString &config)
 
     NETunnelProviderProtocol *appliedProtocol = (NETunnelProviderProtocol *)m_currentTunnel.protocolConfiguration;
     NSData *ovpnPayload = appliedProtocol.providerConfiguration[@"ovpn"];
-    NSString *payloadPreview = @"";
-    if (ovpnPayload != nil) {
-        NSString *decodedPayload = [[NSString alloc] initWithData:ovpnPayload encoding:NSUTF8StringEncoding];
-        if (decodedPayload != nil) {
-            payloadPreview = [decodedPayload substringToIndex:MIN((NSUInteger)512, decodedPayload.length)];
-        }
-    }
 
     qDebug().noquote() << "IosController::startOpenVPN protocolConfiguration"
                        << "bundleId=" << QString::fromNSString(appliedProtocol.providerBundleIdentifier ?: @"")
-                       << "serverAddress=" << QString::fromNSString(appliedProtocol.serverAddress ?: @"")
                        << "providerKeys=" << QString::fromNSString([[appliedProtocol.providerConfiguration.allKeys description] copy])
                        << "ovpnBytes=" << (ovpnPayload != nil ? ovpnPayload.length : 0);
-    qDebug().noquote() << "IosController::startOpenVPN protocolConfiguration payloadPreview="
-                       << QString::fromNSString(payloadPreview);
 
     startTunnel();
 }
@@ -770,7 +771,7 @@ bool IosController::startWireGuard(const QString &config)
     tunnelProtocol.providerBundleIdentifier = [NSString stringWithUTF8String:VPN_NE_BUNDLEID];
     QByteArray configUtf8 = config.toUtf8();
     NSData *wgConfigData = [NSData dataWithBytes:configUtf8.constData() length:configUtf8.size()];
-    tunnelProtocol.providerConfiguration = @{@"wireguard": wgConfigData};
+    tunnelProtocol.providerConfiguration = providerConfiguration(@"wireguard", wgConfigData, m_rawConfig);
     tunnelProtocol.serverAddress = m_serverAddress;
 
     m_currentTunnel.protocolConfiguration = tunnelProtocol;
@@ -786,7 +787,7 @@ bool IosController::startXray(const QString &config)
     tunnelProtocol.providerBundleIdentifier = [NSString stringWithUTF8String:VPN_NE_BUNDLEID];
     QByteArray configUtf8 = config.toUtf8();
     NSData *xrayConfigData = [NSData dataWithBytes:configUtf8.constData() length:configUtf8.size()];
-    tunnelProtocol.providerConfiguration = @{@"xray": xrayConfigData};
+    tunnelProtocol.providerConfiguration = providerConfiguration(@"xray", xrayConfigData, m_rawConfig);
     tunnelProtocol.serverAddress = m_serverAddress;
 
     m_currentTunnel.protocolConfiguration = tunnelProtocol;

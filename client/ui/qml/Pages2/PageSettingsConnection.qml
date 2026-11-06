@@ -86,6 +86,35 @@ PageType {
                 }
 
                 ListItemType {
+                    id: ipBlockBypassRow
+
+                    Layout.fillWidth: true
+
+                    visible: Qt.platform.os === "windows" || Qt.platform.os === "android" || Qt.platform.os === "ios"
+
+                    text: qsTr("Bypass VPN server IP blocking through WARP")
+                    subtitle: qsTr("Route any supported VPN protocol through WARP when the server IP is blocked")
+
+                    onClicked: {
+                        ipBlockBypassSwitch.toggle()
+                        ipBlockBypassSwitch.toggled()
+                    }
+
+                    SwitchType {
+                        id: ipBlockBypassSwitch
+
+                        focusPolicy: Qt.NoFocus
+
+                        checked: SettingsController.ipBlockBypassEnabled
+                        onToggled: function() {
+                            if (checked !== SettingsController.ipBlockBypassEnabled) {
+                                SettingsController.ipBlockBypassEnabled = checked
+                            }
+                        }
+                    }
+                }
+
+                ListItemType {
                     id: splitTunnelingButton
 
                     Layout.fillWidth: true

@@ -426,6 +426,13 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
     }
 
     m_vpnConfiguration = vpnConfiguration;
+    m_container = container;
+#ifdef AMNEZIA_BUILD_TESTS
+    m_warpUnderlayInterfaceName = vpnConfiguration.value(QStringLiteral("testWarpUnderlayInterfaceName"))
+                                          .toString(amnezia::warpUnderlayInterfaceName);
+    m_warpUnderlaySocketPath =
+            vpnConfiguration.value(QStringLiteral("testWarpUnderlaySocketPath")).toString(amnezia::warpUnderlaySocketPath);
+#endif
     m_useWarpUnderlay = false;
     m_mainProtocolStarted = false;
 
@@ -435,21 +442,94 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
 
     appendSplitTunnelingConfig();
 
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     m_vpnConfiguration.remove(configKey::underlayEndpoint);
     m_vpnConfiguration.remove(configKey::underlayAddress);
     m_vpnConfiguration.remove(configKey::underlayServerAddress);
-    m_useWarpUnderlay = container == DockerContainer::Xray
+    m_vpnConfiguration.remove(configKey::underlayInterface);
+    m_vpnConfiguration.remove(configKey::warpUnderlay);
+    bool warpUnderlaySupported = WarpUnderlay::supportsProtocol(container)
             && !build_config::warpRegistrationEndpoints.trimmed().isEmpty()
             && !build_config::warpAwgInitPacket.trimmed().isEmpty();
-    if (m_useWarpUnderlay) {
+    #ifdef AMNEZIA_BUILD_TESTS
+    warpUnderlaySupported |= m_vpnConfiguration.value(QStringLiteral("forceWarpAvailable")).toBool();
+    const bool forceWarpUnderlay = m_vpnConfiguration.value(QStringLiteral("forceWarpUnderlay")).toBool();
+    #else
+    const bool forceWarpUnderlay = false;
+    #endif
+    const bool warpUnderlayEnabled =
+            warpUnderlaySupported && (forceWarpUnderlay || m_appSettingsRepository->isIpBlockBypassEnabled());
+    bool directServerReachable = !warpUnderlayEnabled;
+    if (warpUnderlaySupported && !forceWarpUnderlay) {
+    #ifdef Q_OS_WIN
+        const bool directRangeAlreadyAllowed = IpcClient::withInterface(
+                [this](QSharedPointer<IpcInterfaceReplica> iface) {
+                    auto reply = iface->isKillSwitchAllowedRange(m_remoteAddress);
+                    return reply.waitForFinished(1000) && reply.returnValue();
+                },
+                []() { return false; });
+        if (!directRangeAlreadyAllowed) {
+            const bool directRangeAdded = IpcClient::withInterface(
+                    [this](QSharedPointer<IpcInterfaceReplica> iface) {
+                        auto reply = iface->addKillSwitchAllowedRange(QStringList { m_remoteAddress });
+                        return reply.waitForFinished(1000) && reply.returnValue();
+                    },
+                    []() { return false; });
+            if (directRangeAdded) {
+                m_directServerAllowedRange = m_remoteAddress;
+            }
+        }
+    #endif
+        const bool isXrayTransport = container == DockerContainer::Xray || container == DockerContainer::SSXray;
+        if (warpUnderlayEnabled && isXrayTransport) {
+            QJsonObject xrayConfiguration =
+                    m_vpnConfiguration.value(ProtocolUtils::key_proto_config_data(Proto::Xray)).toObject();
+            if (xrayConfiguration.isEmpty()) {
+                xrayConfiguration =
+                        m_vpnConfiguration.value(ProtocolUtils::key_proto_config_data(Proto::SSXray)).toObject();
+            }
+            const QJsonObject nativeConfig =
+                    QJsonDocument::fromJson(xrayConfiguration.value(configKey::config).toString().toUtf8()).object();
+            directServerReachable = WarpUnderlay::isXrayServerReachableDirectly(
+                    nativeConfig, m_vpnConfiguration.value(configKey::hostName).toString(), m_remoteAddress,
+                    [this, generation]() { return generation != m_generation; });
+        }
+        if (generation != m_generation) {
+    #ifdef Q_OS_WIN
+            clearDirectServerAllowedRange();
+    #endif
+            return;
+        }
+    #ifdef Q_OS_WIN
+        if (!directServerReachable && !clearDirectServerAllowedRange()) {
+            stopProtocols(ErrorCode::AmneziaServiceConnectionFailed);
+            return;
+        }
+    #endif
+    }
+    const bool useWarpUnderlay = warpUnderlayEnabled && !directServerReachable;
+    #ifdef Q_OS_WIN
+    m_useWarpUnderlay = useWarpUnderlay;
+    #endif
+    if (useWarpUnderlay) {
         const bool prepared = prepareWarpUnderlay(generation);
         if (generation != m_generation) {
             return;
         }
+    #ifdef Q_OS_WIN
+        if (container == DockerContainer::WireGuard || container == DockerContainer::Awg
+            || container == DockerContainer::Awg2) {
+            m_vpnConfiguration.insert(QStringLiteral("hopType"), QStringLiteral("MultiHopExit"));
+        }
+    #endif
         if (!prepared) {
             qCritical() << "Failed to prepare the WARP underlay";
+    #ifdef AMNEZIA_DESKTOP
             stopProtocols(ErrorCode::ApiConfigDownloadError);
+    #else
+            setConnectionState(Vpn::ConnectionState::Error);
+            emit vpnProtocolError(ErrorCode::ApiConfigDownloadError);
+    #endif
             return;
         }
     }
@@ -569,7 +649,8 @@ void VpnConnection::startWarpUnderlay()
     const auto operation = qScopeGuard([this]() { finishProtocolOperation(); });
     m_underlayStopping = false;
     m_underlayRestartPending = false;
-    m_underlayProtocol.reset(new WireguardProtocol(m_underlayConfiguration), &QObject::deleteLater);
+    m_underlayProtocol.reset(new WireguardProtocol(m_underlayConfiguration, m_warpUnderlaySocketPath),
+                             &QObject::deleteLater);
     auto *protocol = m_underlayProtocol.data();
     connect(protocol, &VpnProtocol::protocolError, this, [this, protocol](ErrorCode error) {
         if (protocol == m_underlayProtocol.data()) {
@@ -615,8 +696,12 @@ void VpnConnection::retryWarpUnderlay(ErrorCode error, int delay)
         return;
     }
     m_underlayTimer.stop();
+    if (m_mainProtocolStarted && m_container != DockerContainer::Xray && m_container != DockerContainer::SSXray) {
+        stopProtocols(error);
+        return;
+    }
     QJsonObject awg = m_underlayConfiguration.value(QStringLiteral("awg_config_data")).toObject();
-    if (awg.value(configKey::port).toInt() == 2408 && !m_mainProtocolStarted) {
+    if (awg.value(configKey::port).toInt() == 500 && !m_mainProtocolStarted) {
         stopProtocols(error);
         return;
     }
@@ -724,6 +809,11 @@ void VpnConnection::onProtocolStateChanged(Vpn::ConnectionState state)
             || m_underlayProtocol->connectionState() != Vpn::ConnectionState::Connected)) {
         return;
     }
+#ifdef Q_OS_WIN
+    if (!m_useWarpUnderlay && state == Vpn::ConnectionState::Connected && !clearDirectServerAllowedRange()) {
+        qWarning() << "Failed to remove the temporary direct server firewall range";
+    }
+#endif
     setConnectionState(state);
 }
 
@@ -763,6 +853,10 @@ void VpnConnection::finishDisconnect()
     m_useWarpUnderlay = false;
     m_mainProtocolStarted = false;
     m_underlayConfiguration = { };
+    m_container = DockerContainer::None;
+    if (!clearDirectServerAllowedRange()) {
+        qWarning() << "Failed to remove the temporary direct server firewall range";
+    }
     const quint64 generation = m_generation;
     setConnectionState(m_disconnectError == ErrorCode::NoError ? Vpn::ConnectionState::Disconnected
                                                                : Vpn::ConnectionState::Error);
@@ -780,6 +874,28 @@ void VpnConnection::finishDisconnect()
             }
         });
     }
+}
+
+bool VpnConnection::clearDirectServerAllowedRange()
+{
+#ifdef Q_OS_WIN
+    if (m_directServerAllowedRange.isEmpty()) {
+        return true;
+    }
+    const bool removed = IpcClient::withInterface(
+            [this](QSharedPointer<IpcInterfaceReplica> iface) {
+                auto reply = iface->removeKillSwitchAllowedRange(QStringList { m_directServerAllowedRange });
+                return reply.waitForFinished(1000) && reply.returnValue();
+            },
+            []() { return false; });
+    if (removed) {
+        m_directServerAllowedRange.clear();
+    }
+    return removed;
+#else
+    m_directServerAllowedRange.clear();
+    return true;
+#endif
 }
 
 void VpnConnection::finishProtocolOperation()
@@ -987,10 +1103,17 @@ bool VpnConnection::prepareWarpUnderlay(quint64 generation)
         return false;
     }
     m_underlayConfiguration = *underlayConfiguration;
+#ifdef Q_OS_WIN
     m_remoteAddress = outerAddress;
     m_vpnConfiguration.insert(configKey::underlayEndpoint, outerAddress);
     m_vpnConfiguration.insert(configKey::underlayAddress, underlay->ipv4Address.section(QLatin1Char('/'), 0, 0));
     m_vpnConfiguration.insert(configKey::underlayServerAddress, vpnServerAddress);
+    m_vpnConfiguration.insert(configKey::underlayInterface, m_warpUnderlayInterfaceName);
+#elif defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    m_underlayConfiguration.insert(configKey::underlayServerHost, m_vpnConfiguration.value(configKey::hostName));
+    m_underlayConfiguration.insert(configKey::underlayServerAddress, vpnServerAddress);
+    m_vpnConfiguration.insert(configKey::warpUnderlay, m_underlayConfiguration);
+#endif
     return true;
 }
 

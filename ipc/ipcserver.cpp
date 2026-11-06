@@ -260,6 +260,16 @@ bool IpcServer::addKillSwitchAllowedRange(QStringList ranges)
     return KillSwitch::instance()->addAllowedRange(ranges);
 }
 
+bool IpcServer::removeKillSwitchAllowedRange(QStringList ranges)
+{
+    return KillSwitch::instance()->removeAllowedRange(ranges);
+}
+
+bool IpcServer::isKillSwitchAllowedRange(QString range)
+{
+    return KillSwitch::instance()->isAllowedRange(range);
+}
+
 bool IpcServer::disableAllTraffic()
 {
 #ifdef MZ_DEBUG

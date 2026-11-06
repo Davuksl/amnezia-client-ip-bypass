@@ -264,6 +264,17 @@ void SettingsUiController::toggleStrictKillSwitch(bool enable)
     emit strictKillSwitchEnabledChanged(enable);
 }
 
+bool SettingsUiController::isIpBlockBypassEnabled()
+{
+    return m_settingsController->isIpBlockBypassEnabled();
+}
+
+void SettingsUiController::toggleIpBlockBypass(bool enable)
+{
+    m_settingsController->toggleIpBlockBypass(enable);
+    emit ipBlockBypassEnabledChanged(enable);
+}
+
 bool SettingsUiController::isNotificationPermissionGranted()
 {
 #ifdef Q_OS_ANDROID

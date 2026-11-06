@@ -177,6 +177,14 @@ public:
     {
         return record("allowRange");
     }
+    bool removeKillSwitchAllowedRange(const QStringList) override
+    {
+        return record("removeRange");
+    }
+    bool isKillSwitchAllowedRange(const QString) override
+    {
+        return false;
+    }
     bool resetKillSwitchAllowedRange(const QStringList) override
     {
         return record("resetRange");
